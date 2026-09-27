@@ -1,0 +1,949 @@
+---
+title: "0225lassopw"
+output: html_document
+date: "2026-09-08"
+---
+## brand new file based on reanalysis results during revision
+```{r}
+# rm(list = ls(all.names = TRUE))
+
+library(tidyverse)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(AnnotationDbi)
+```
+
+# data loading
+```{r}
+ileum_lasso <- read.csv(
+  "/Users/guokexin/Documents/allenlee/manuscript/revision_072726/lasso_revision/lasso_ileum_originalCV_discovery.csv",
+  stringsAsFactors = FALSE
+)
+
+colon_lasso <- read.csv(
+  "/Users/guokexin/Documents/allenlee/manuscript/revision_072726/lasso_revision/lasso_colon_originalCV_discovery.csv",
+  stringsAsFactors = FALSE
+)
+
+dim(ileum_lasso)
+dim(colon_lasso)
+
+names(ileum_lasso)
+#names(colon_lasso)
+```
+```{r}
+length(unique(ileum_lasso$gene))
+length(unique(colon_lasso$gene))
+```
+```{r}
+x_ileum <- read.csv(
+  "/Users/guokexin/Documents/allenlee/manuscript/revision_072726/lasso_revision/x.ileum.csv",
+  check.names = FALSE
+)
+
+x_colon <- read.csv(
+  "/Users/guokexin/Documents/allenlee/manuscript/revision_072726/lasso_revision/x.left.colon.csv",
+  check.names = FALSE
+)
+
+dim(x_ileum)
+dim(x_colon)
+```
+```{r}
+ileum_universe_ens <- colnames(x_ileum)[-1]
+colon_universe_ens <- colnames(x_colon)[-1]
+
+length(ileum_universe_ens)
+length(colon_universe_ens)
+```
+
+# mapping
+```{r}
+# helper
+map_ensembl_to_entrez <- function(x) {
+
+  x <- sub("\\..*$", "", x)
+
+  mapped <- AnnotationDbi::select(
+    org.Hs.eg.db,
+    keys = unique(x),
+    keytype = "ENSEMBL",
+    columns = c("ENTREZID", "SYMBOL")
+  ) %>%
+    filter(
+      !is.na(ENTREZID),
+      !is.na(SYMBOL)
+    ) %>%
+    distinct(ENSEMBL, .keep_all = TRUE)
+
+  mapped
+}
+
+# selected
+ileum_selected_map <- map_ensembl_to_entrez(
+  unique(ileum_lasso$gene)
+)
+
+colon_selected_map <- map_ensembl_to_entrez(
+  unique(colon_lasso$gene)
+)
+
+# universe
+ileum_universe_map <- map_ensembl_to_entrez(
+  ileum_universe_ens
+)
+
+colon_universe_map <- map_ensembl_to_entrez(
+  colon_universe_ens
+)
+
+
+cat(
+  "Ileum selected:",
+  length(unique(ileum_lasso$gene)),
+  "-> mapped:",
+  length(unique(ileum_selected_map$ENTREZID)),
+  "\n"
+)
+cat(
+  "Colon selected:",
+  length(unique(colon_lasso$gene)),
+  "-> mapped:",
+  length(unique(colon_selected_map$ENTREZID)),
+  "\n"
+)
+```
+# run KEGG ORA, not GSEA
+```{r}
+kegg_lasso_ileum <- enrichKEGG(
+  gene = unique(ileum_selected_map$ENTREZID),
+  universe = unique(ileum_universe_map$ENTREZID),
+  organism = "hsa",
+  keyType = "ncbi-geneid",
+  pvalueCutoff = 1,
+  pAdjustMethod = "BH",
+  qvalueCutoff = 1,
+  minGSSize = 10,
+  maxGSSize = 500
+)
+
+kegg_lasso_colon <- enrichKEGG(
+  gene = unique(colon_selected_map$ENTREZID),
+  universe = unique(colon_universe_map$ENTREZID),
+  organism = "hsa",
+  keyType = "ncbi-geneid",
+  pvalueCutoff = 1,
+  pAdjustMethod = "BH",
+  qvalueCutoff = 1,
+  minGSSize = 10,
+  maxGSSize = 500
+)
+```
+
+# inspect before panels
+```{r}
+ileum_kegg_df <- as.data.frame(kegg_lasso_ileum) %>%
+  arrange(p.adjust)
+
+colon_kegg_df <- as.data.frame(kegg_lasso_colon) %>%
+  arrange(p.adjust)
+
+dim(ileum_kegg_df)
+dim(colon_kegg_df)
+
+head(
+  ileum_kegg_df[, c(
+    "Description", "GeneRatio", "Count",
+    "pvalue", "p.adjust"
+  )],
+  15
+)
+
+head(
+  colon_kegg_df[, c(
+    "Description", "GeneRatio", "Count",
+    "pvalue", "p.adjust"
+  )],
+  15
+)
+
+cat(
+  "Ileum FDR<0.05:",
+  sum(ileum_kegg_df$p.adjust < 0.05, na.rm = TRUE),
+  "\n"
+)
+
+cat(
+  "Colon FDR<0.05:",
+  sum(colon_kegg_df$p.adjust < 0.05, na.rm = TRUE),
+  "\n"
+)
+```
+```{r}
+## pathway results check before plotting
+write.csv(
+  ileum_kegg_df,
+  "LASSO_KEGG_ORA_ileum_complete.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  colon_kegg_df,
+  "LASSO_KEGG_ORA_rectosigmoid_complete.csv",
+  row.names = FALSE
+)
+```
+
+# panel a-d
+```{r}
+library(enrichplot)
+library(stringr)
+
+pA <- dotplot(
+  kegg_lasso_ileum,
+  showCategory = 5,
+  x = "GeneRatio"
+) +
+  scale_y_discrete(
+    labels = function(x) stringr::str_wrap(x, width = 20)
+  ) +
+  ggtitle("Ileum") +
+  theme_minimal(base_size = 15) +
+  theme(
+    axis.text.y = element_text(size = 15),
+    axis.title = element_text(size = 13),
+    plot.title = element_text(face = "bold", size = 13)
+  )
+
+pC <- dotplot(
+  kegg_lasso_colon,
+  showCategory = 5,
+  x = "GeneRatio"
+) +
+  scale_y_discrete(
+    labels = function(x) stringr::str_wrap(x, width = 20)
+  ) +
+  ggtitle("Rectosigmoid Colon") +
+  theme_minimal(base_size = 15) +
+  theme(
+    axis.text.y = element_text(size = 15),
+    axis.title = element_text(size = 13),
+    plot.title = element_text(face = "bold", size = 13)
+  )
+
+pA
+pC
+```
+
+## prepare before cnetplot
+```{r}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+
+kegg_ileum_readable <- setReadable(
+  kegg_lasso_ileum,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID"
+)
+
+kegg_colon_readable <- setReadable(
+  kegg_lasso_colon,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID"
+)
+
+head(kegg_ileum_readable@result$geneID)
+head(kegg_colon_readable@result$geneID)
+```
+```{r}
+pB <- cnetplot(
+  kegg_ileum_readable,
+  showCategory = 5,
+  circular = FALSE,
+  colorEdge = FALSE,
+  node_label = "all"
+)
+
+
+pB
+
+```
+## giveup cnetpot and use other plot
+```{r}
+library(tidyverse)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+
+make_pathway_gene_df <- function(enrich_obj, top_n = 5) {
+
+  top_df <- as.data.frame(enrich_obj) %>%
+    dplyr::arrange(p.adjust) %>%
+    slice_head(n = top_n) %>%
+    dplyr::select(Description, p.adjust, geneID)
+
+  edges <- top_df %>%
+    separate_rows(geneID, sep = "/") %>%
+    dplyr::rename(entrez = geneID)
+
+  gene_map <- AnnotationDbi::select(
+    org.Hs.eg.db,
+    keys = unique(edges$entrez),
+    keytype = "ENTREZID",
+    columns = "SYMBOL"
+  ) %>%
+    dplyr::filter(!is.na(SYMBOL)) %>%
+    dplyr::distinct(ENTREZID, .keep_all = TRUE)
+
+  edges %>%
+    left_join(
+      gene_map,
+      by = c("entrez" = "ENTREZID")
+    ) %>%
+    dplyr::filter(!is.na(SYMBOL)) %>%
+    dplyr::mutate(
+      Description = stringr::str_wrap(Description, width = 25)
+    )
+}
+```
+
+```{r}
+ileum_edges <- make_pathway_gene_df(
+  kegg_lasso_ileum,
+  top_n = 3
+)
+
+colon_edges <- make_pathway_gene_df(
+  kegg_lasso_colon,
+  top_n = 2
+)
+
+ileum_edges
+colon_edges
+```
+```{r}
+library(tidyverse)
+library(igraph)
+library(ggrepel)
+library(stringr)
+
+make_lasso_network <- function(edge_df, site_title, seed = 123) {
+
+  # clean labels
+  edge_plot <- edge_df %>%
+    dplyr::mutate(
+      Description = str_replace_all(Description, "\n", " "),
+      Description = str_wrap(Description, width = 24),
+      pathway_id = paste0("PATH_", row_number())
+    ) %>%
+    dplyr::select(Description, p.adjust, SYMBOL) %>%
+    dplyr::distinct()
+
+  # prefix IDs so pathway/gene names can never collide
+  graph_edges <- edge_plot %>%
+    transmute(
+      from = paste0("P::", Description),
+      to   = paste0("G::", SYMBOL),
+      pathway = Description
+    )
+
+  pathway_vertices <- edge_plot %>%
+    dplyr::distinct(Description, p.adjust) %>%
+    transmute(
+      name = paste0("P::", Description),
+      label = Description,
+      type = "Pathway",
+      p.adjust = p.adjust
+    )
+
+  gene_vertices <- edge_plot %>%
+    dplyr::distinct(SYMBOL) %>%
+    transmute(
+      name = paste0("G::", SYMBOL),
+      label = SYMBOL,
+      type = "Gene",
+      p.adjust = NA_real_
+    )
+
+  vertices <- bind_rows(pathway_vertices, gene_vertices)
+
+  # construct graph
+  g <- graph_from_data_frame(
+    graph_edges,
+    directed = FALSE,
+    vertices = vertices
+  )
+
+  # layout only -- avoids ggraph/cnetplot error
+  set.seed(seed)
+
+  lay <- layout_with_fr(
+    g,
+    niter = 3000,
+    grid = "nogrid"
+  )
+
+  node_df <- as.data.frame(lay)
+  colnames(node_df) <- c("x", "y")
+
+  node_df$name <- V(g)$name
+
+  node_df <- node_df %>%
+    left_join(vertices, by = "name")
+
+  # edge coordinates
+  edge_coords <- graph_edges %>%
+    left_join(
+      node_df %>% dplyr::select(name, x, y),
+      by = c("from" = "name")
+    ) %>%
+    dplyr::rename(x_from = x, y_from = y) %>%
+    left_join(
+      node_df %>% dplyr::select(name, x, y),
+      by = c("to" = "name")
+    ) %>%
+    dplyr::rename(x_to = x, y_to = y)
+
+  pathway_nodes <- node_df %>%
+    filter(type == "Pathway")
+
+  gene_nodes <- node_df %>%
+    dplyr::filter(type == "Gene")
+
+  p <- ggplot() +
+
+    # pathway-gene edges
+    geom_segment(
+      data = edge_coords,
+      aes(
+        x = x_from,
+        y = y_from,
+        xend = x_to,
+        yend = y_to,
+        color = pathway
+      ),
+      linewidth = 0.55,
+      alpha = 0.55
+    ) +
+
+    # gene nodes
+    geom_point(
+      data = gene_nodes,
+      aes(x = x, y = y),
+      size = 3.2,
+      color = "grey60"
+    ) +
+
+    # pathway nodes
+    geom_point(
+      data = pathway_nodes,
+      aes(x = x, y = y, color = label),
+      size = 5
+    ) +
+
+    # gene labels
+    geom_text_repel(
+      data = gene_nodes,
+      aes(x = x, y = y, label = label),
+      size = 5,
+      box.padding = 0.25,
+      point.padding = 0.15,
+      segment.color = NA,
+      max.overlaps = Inf
+    ) +
+
+    # pathway labels
+    geom_text_repel(
+      data = pathway_nodes,
+      aes(x = x, y = y, label = label),
+      size = 6,
+      fontface = "bold",
+      box.padding = 0.4,
+      point.padding = 0.3,
+      segment.color = NA,
+      max.overlaps = Inf
+    ) +
+
+    labs(
+      title = site_title,
+      color = "Pathway"
+    ) +
+
+    theme_void(base_size = 15) +
+
+    theme(
+      plot.title = element_text(
+        face = "bold",
+        hjust = 0.5,
+        size = 14
+      ),
+      legend.position = "right",
+      legend.title = element_text(size = 13),
+      legend.text = element_text(size = 11),
+      plot.margin = margin(15, 25, 15, 25)
+    )
+
+  return(p)
+}
+```
+
+```{r}
+pB <- make_lasso_network(
+  ileum_edges,
+  "Ileum",
+  seed = 123
+)
+
+pD <- make_lasso_network(
+  colon_edges,
+  "Rectosigmoid Colon",
+  seed = 456
+)
+
+pB
+pD
+```
+
+# panel e
+```{r}
+ileum_top <- read.csv("/Users/guokexin/Documents/allenlee/manuscript/revision_072726/lasso_revision/lasso_ileum_top_stable_features.csv")
+colon_top <- read.csv("/Users/guokexin/Documents/allenlee/manuscript/revision_072726/lasso_revision/lasso_colon_top_stable_features.csv")
+
+all_top <- bind_rows(ileum_top, colon_top)
+```
+```{r}
+# ------------------------------------------------------------
+# 2. Standardize site labels + clean gene IDs
+# ------------------------------------------------------------
+
+all_top <- all_top %>%
+  mutate(
+    site = case_when(
+      str_detect(site, regex("ileum", ignore_case = TRUE)) ~ "Ileum",
+      str_detect(site, regex("colon|rectosigmoid|left", ignore_case = TRUE)) ~
+        "Rectosigmoid Colon",
+      TRUE ~ site
+    ),
+
+    # remove Ensembl version suffix if present
+    gene_clean = sub("\\..*$", "", gene),
+
+    abs_beta = abs(beta),
+
+    direction = if_else(
+      beta >= 0,
+      "Positive",
+      "Negative"
+    )
+  )
+
+# ------------------------------------------------------------
+# 3. Map Ensembl gene IDs -> gene symbols
+# ------------------------------------------------------------
+
+gene_map <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = unique(all_top$gene_clean),
+  keytype = "ENSEMBL",
+  columns = c("SYMBOL")
+) %>%
+  filter(!is.na(SYMBOL)) %>%
+  distinct(ENSEMBL, .keep_all = TRUE)
+
+all_top <- all_top %>%
+  left_join(
+    gene_map,
+    by = c("gene_clean" = "ENSEMBL")
+  ) %>%
+  mutate(
+    # fallback to Ensembl if symbol mapping fails
+    SYMBOL = if_else(
+      is.na(SYMBOL) | SYMBOL == "",
+      NA,
+      SYMBOL
+    )
+  )
+
+# ------------------------------------------------------------
+# 4. Select objectively displayed pairs
+#
+# Rule:
+# - prioritize higher selection frequency
+# - break ties by larger absolute coefficient
+# - max 2 pairs per microbe
+# - show 8 pairs per site
+# ------------------------------------------------------------
+
+pick_top_stable_pairs <- function(df,
+                                  n_keep = 8,
+                                  max_per_microbe = 2) {
+
+  df <- df %>%
+    filter(
+      !is.na(beta),
+      !is.na(selection_frequency),
+      !is.na(microbe),
+      !is.na(SYMBOL)
+    ) %>%
+    arrange(
+      desc(selection_frequency),
+      desc(abs_beta)
+    )
+
+  selected_idx <- integer(0)
+  microbe_count <- c()
+
+  for (i in seq_len(nrow(df))) {
+
+    this_microbe <- df$microbe[i]
+
+    n_this <- if (
+      this_microbe %in% names(microbe_count)
+    ) {
+      microbe_count[[this_microbe]]
+    } else {
+      0
+    }
+
+    if (n_this < max_per_microbe) {
+
+      selected_idx <- c(selected_idx, i)
+
+      microbe_count[[this_microbe]] <- n_this + 1
+    }
+
+    if (length(selected_idx) >= n_keep) {
+      break
+    }
+  }
+
+  df[selected_idx, , drop = FALSE]
+}
+
+plot_df <- all_top %>%
+  group_by(site) %>%
+  group_modify(
+    ~ pick_top_stable_pairs(
+      .x,
+      n_keep = 6,
+      max_per_microbe = 2
+    )
+  ) %>%
+  ungroup()
+
+# ------------------------------------------------------------
+# 5. Create readable gene-microbe labels
+# ------------------------------------------------------------
+
+plot_df <- plot_df %>%
+  mutate(
+    microbe_label = str_replace_all(microbe, "_", " "),
+
+    pair_label = paste0(
+      SYMBOL,
+      "\n(",
+      microbe_label,
+      ")"
+    )
+  )
+
+# inspect exactly which pairs will be displayed
+plot_df %>%
+  dplyr::select(
+    site,
+    SYMBOL,
+    microbe,
+    beta,
+    selection_frequency
+  ) %>%
+  arrange(
+    site,
+    desc(selection_frequency),
+    desc(abs(beta))
+  )
+```
+```{r}
+# ------------------------------------------------------------
+# 6. Control y-axis ordering within each site
+# ------------------------------------------------------------
+
+plot_df <- plot_df %>%
+  group_by(site) %>%
+  arrange(abs_beta, .by_group = TRUE) %>%
+  mutate(
+    pair_plot = factor(
+      pair_label,
+      levels = unique(pair_label)
+    )
+  ) %>%
+  ungroup()
+
+# ------------------------------------------------------------
+# 7. Revised forest-like Panel E
+# ------------------------------------------------------------
+
+pE <- ggplot(
+  plot_df,
+  aes(
+    x = beta,
+    y = pair_plot,
+    color = direction
+  )
+) +
+
+  # zero reference
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    color = "grey40",
+    linewidth = 0.5
+  ) +
+
+  # forest/lollipop-style line from zero to coefficient
+  geom_segment(
+    aes(
+      x = 0,
+      xend = beta,
+      y = pair_plot,
+      yend = pair_plot
+    ),
+    linewidth = 0.8,
+    alpha = 0.75
+  ) +
+
+  # point size communicates reviewer-requested stability
+  geom_point(
+    aes(size = selection_frequency),
+    alpha = 0.95
+  ) +
+
+  facet_wrap(
+    ~ site,
+    scales = "free_y",
+    ncol = 2
+  ) +
+
+  scale_color_manual(
+    values = c(
+      "Negative" = "#2C7FB8",
+      "Positive" = "#D7301F"
+    ),
+    name = "Coefficient direction"
+  ) +
+
+  scale_size_continuous(
+    name = "Selection frequency",
+    range = c(2.8, 7),
+    labels = scales::percent_format(accuracy = 1)
+  ) +
+
+  labs(
+    x = "LASSO coefficient",
+    y = "Gene–microbe pair"
+  ) +
+
+  theme_bw(base_size = 14) +
+
+  theme(
+    strip.text = element_text(
+      face = "bold",
+      size = 13
+    ),
+
+    axis.text.y = element_text(size = 13),
+
+    axis.title.x = element_text(size = 12),
+
+    axis.title.y = element_text(size = 11),
+
+    legend.position = "top",
+
+    legend.title = element_text(size = 11),
+
+    legend.text = element_text(size = 10),
+
+    panel.grid.minor = element_blank(),
+
+    panel.spacing = unit(1.2, "lines")
+  )
+
+pE
+```
+
+
+```{r}
+pick_top_stable_pairs <- function(df,
+                                  n_keep = 8,
+                                  max_per_microbe = 2) {
+
+  df <- df %>%
+    arrange(desc(selection_frequency), desc(abs_beta))
+
+  selected_idx <- integer(0)
+  microbe_count <- c()
+
+  for (i in seq_len(nrow(df))) {
+
+    this_microbe <- df$microbe[i]
+
+    n_this <- if (
+      this_microbe %in% names(microbe_count)
+    ) {
+      microbe_count[[this_microbe]]
+    } else {
+      0
+    }
+
+    if (n_this < max_per_microbe) {
+      selected_idx <- c(selected_idx, i)
+      microbe_count[[this_microbe]] <- n_this + 1
+    }
+
+    if (length(selected_idx) >= n_keep) break
+  }
+
+  df[selected_idx, , drop = FALSE]
+}
+```
+```{r}
+plot_df <- all_top %>%
+  group_by(site) %>%
+  group_modify(
+    ~ pick_top_stable_pairs(
+      .x,
+      n_keep = 8,
+      max_per_microbe = 2
+    )
+  ) %>%
+  ungroup()
+```
+```{r}
+gene_map <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = unique(plot_df$gene),
+  keytype = "ENSEMBL",
+  columns = "SYMBOL"
+) %>%
+  distinct(ENSEMBL, .keep_all = TRUE)
+
+plot_df <- plot_df %>%
+  left_join(
+    gene_map,
+    by = c("gene" = "ENSEMBL")
+  )
+plot_df
+```
+
+
+
+
+
+
+
+
+
+
+###### below are skipped
+```{r}
+pair_df <- read.csv(
+  "/Users/guokexin/Documents/allenlee/manuscript/revision_072726/lasso_revision/lasso_12_keypairs_final_summary.csv",
+  stringsAsFactors = FALSE
+)
+
+names(pair_df)
+```
+```{r}
+pair_df <- pair_df %>%
+  dplyr::rename(
+    Site = site,
+    Microbe = microbe,
+    Gene = SYMBOL,
+    coefficient = beta,
+    selection_frequency = selection_frequency
+  )
+head(pair_df)
+```
+```{r}
+pair_df <- pair_df %>%
+  dplyr::mutate(
+    Site = case_when(
+      grepl("ileum", Site, ignore.case = TRUE) ~ "Ileum",
+      TRUE ~ "Rectosigmoid Colon"
+    ),
+    pair_label = paste0(
+      Gene, "\n",
+      Microbe
+    )
+  )
+
+pair_df <- pair_df %>%
+  dplyr::mutate(
+    pair_label = paste0(
+      Gene, 
+      "\n(", str_replace_all(Microbe, "_", " "), ")"
+      # " – ",
+      # gsub("_", " ", Microbe)
+    )
+  )
+
+pair_df$pair_label <- stringr::str_wrap(
+  pair_df$pair_label,
+  width = 22
+)
+
+head(pair_df)
+```
+```{r}
+library(ggplot2)
+library(dplyr)
+
+pE <- ggplot(
+  pair_df,
+  aes(
+    x = coefficient,
+    y = reorder(pair_label, coefficient),
+    size = selection_frequency
+  )
+) +
+  geom_point(
+    color = "black",
+    alpha = 0.85
+  ) +
+
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    color = "grey40",
+    linewidth = 0.5
+  ) +
+
+  facet_wrap(
+    ~ Site,
+    scales = "free_y",
+    ncol = 2
+  ) +
+
+  scale_size_continuous(
+    name = "Selection frequency",
+    range = c(2.5, 7),
+    breaks = c(0.1, 0.25, 0.5, 0.75)
+  ) +
+
+  labs(
+    x = "LASSO coefficient",
+    y = NULL
+  ) +
+
+  theme_minimal(base_size = 15) +
+
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold", size = 13),
+    axis.text.y = element_text(size = 13),
+    panel.spacing = unit(1.2, "lines")
+  )
+
+pE
+```
+
