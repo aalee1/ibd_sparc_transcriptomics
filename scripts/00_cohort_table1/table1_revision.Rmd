@@ -1,0 +1,499 @@
+---
+title: "table1_revision"
+output: html_document
+date: "2026-08-25"
+---
+
+# this is update on 09192026 from the beginning data loading
+```{r}
+# Load libraries
+library(tableone)
+library(readr)
+library(dplyr)
+library(forcats)
+
+# Load your data
+meta_data <- read_csv("data/meta_data.csv")
+
+## updated on 8/29(9 patients with >4 SES)
+## 082526
+meta_data <- meta_data %>%
+  dplyr::filter(
+    total_ses_cd_score <= 4,
+    pro_grp %in% c("High-PRO", "Low-PRO")
+  )
+
+# Check the structure
+dim(meta_data)
+table(meta_data$pro_grp)
+
+yn_factor <- function(x) {
+  x <- as.character(x)
+  x[x == ""] <- NA
+  factor(x, levels = c("No", "Yes"))
+}
+
+meta_unique <- meta_data %>%
+  distinct(patient_id, .keep_all = TRUE) %>%
+  mutate(
+    current_biologic_any = case_when(
+      is.na(current_biologic) ~ NA_character_,
+      current_biologic == "No" ~ "No",
+      TRUE ~ "Yes"
+    ),
+
+    current_5_asa = yn_factor(current_5_asa),
+    current_steroids = yn_factor(current_steroids),
+    current_immunomodulator = yn_factor(current_immunomodulator),
+    current_biologic_any = yn_factor(current_biologic_any),
+
+    prior_small_bowel_resection = yn_factor(prior_small_bowel_resection),
+    prior_stricturoplasty = yn_factor(prior_stricturoplasty),
+    antibiotics = yn_factor(antibiotics),
+
+    prior_colon_resection_any = case_when(
+      is.na(prior_colon_resection) ~ NA_character_,
+      prior_colon_resection == "No" ~ "No",
+      TRUE ~ "Yes"
+    ),
+    prior_colon_resection_any = yn_factor(prior_colon_resection_any),
+
+    gender = factor(na_if(gender, "")),
+    race = factor(na_if(race, "")),
+    ethnicity = factor(na_if(ethnicity, "")),
+    crohns_location = factor(na_if(crohns_location, "")),
+    smoking_history = factor(na_if(smoking_history, ""))
+  )
+
+if ("prior_ileostomy_colostomy" %in% names(meta_unique)) {
+  meta_unique <- meta_unique %>%
+    mutate(
+      prior_ileostomy_colostomy = yn_factor(prior_ileostomy_colostomy)
+    )
+}
+
+vars <- c(
+  "age",
+  "gender",
+  "race",
+  "ethnicity",
+  "bmi",
+  "time_from_diagnosis",
+  "crohns_location",
+
+  "current_5_asa",
+  "current_steroids",
+  "current_immunomodulator",
+  "current_biologic_any",
+
+  "total_ses_cd_score",
+  "calprotectin",
+
+  "prior_ileostomy_colostomy",
+  "prior_small_bowel_resection",
+  "prior_colon_resection_any",
+  "prior_stricturoplasty",
+
+  "smoking_history",
+  "antibiotics"
+)
+
+vars <- vars[vars %in% names(meta_unique)]
+
+factor_vars <- c(
+  "gender",
+  "race",
+  "ethnicity",
+  "crohns_location",
+
+  "current_5_asa",
+  "current_steroids",
+  "current_immunomodulator",
+  "current_biologic_any",
+
+  "prior_ileostomy_colostomy",
+  "prior_small_bowel_resection",
+  "prior_colon_resection_any",
+  "prior_stricturoplasty",
+
+  "smoking_history",
+  "antibiotics"
+)
+
+factor_vars <- factor_vars[factor_vars %in% names(meta_unique)]
+
+table1 <- CreateTableOne(
+  vars = vars,
+  strata = "pro_grp",
+  data = meta_unique,
+  factorVars = factor_vars,
+  includeNA = FALSE
+)
+
+table1_out <- print(
+  table1,
+  showAllLevels = FALSE,
+  test = TRUE,
+  smd = TRUE,
+  missing = TRUE,
+  quote = FALSE,
+  noSpaces = TRUE,
+  printToggle = FALSE
+)
+
+# write.csv(
+#   table1_out,
+#   "Table1_revision_simple.csv"
+# )
+
+table1_out
+```
+
+```{r}
+availability <- bind_rows(
+  lapply(vars, function(v) {
+    meta_unique %>%
+      group_by(pro_grp) %>%
+      summarise(
+        variable = v,
+        n_nonmissing = sum(!is.na(.data[[v]])),
+        N_total = n(),
+        missing_n = sum(is.na(.data[[v]])),
+        missing_pct = round(100 * mean(is.na(.data[[v]])), 1),
+        .groups = "drop"
+      )
+  })
+)
+
+# write.csv(
+#   availability,
+#   "Table1_nonmissing_denominators_by_group.csv",
+#   row.names = FALSE
+# )
+
+availability
+```
+
+```{r}
+### Supplementary Table 4: segment-specific SES-CD mean/SD
+
+segment_vars <- c(
+  "ileal_ses_cd_score",
+  "right_ses_cd_score",
+  "transverse_ses_cd_score",
+  "left_ses_cd_score",
+  "rectum_ses_cd_score"
+)
+
+segment_labels <- c(
+  ileal_ses_cd_score = "Ileal SES-CD, mean (SD)",
+  right_ses_cd_score = "Right-colon SES-CD, mean (SD)",
+  transverse_ses_cd_score = "Transverse-colon SES-CD, mean (SD)",
+  left_ses_cd_score = "Left-colon SES-CD, mean (SD)",
+  rectum_ses_cd_score = "Rectal SES-CD, mean (SD)"
+)
+
+mean_sd <- function(x) {
+  if (all(is.na(x))) return(NA_character_)
+  sprintf("%.2f (%.2f)", mean(x, na.rm = TRUE), sd(x, na.rm = TRUE))
+}
+
+segment_summary <- meta_unique %>%
+  dplyr::select(pro_grp, all_of(segment_vars)) %>%
+  tidyr::pivot_longer(
+    cols = all_of(segment_vars),
+    names_to = "measure",
+    values_to = "value"
+  ) %>%
+  group_by(measure, pro_grp) %>%
+  summarise(
+    value = mean_sd(value),
+    n_available = sum(!is.na(value)),
+    .groups = "drop"
+  ) %>%
+  mutate(measure = recode(measure, !!!segment_labels)) %>%
+  dplyr::select(measure, pro_grp, value) %>%
+  tidyr::pivot_wider(
+    names_from = pro_grp,
+    values_from = value
+  )
+
+segment_summary
+```
+```{r}
+median_iqr <- function(x) {
+  if (all(is.na(x))) return(NA_character_)
+  sprintf(
+    "%.2f [%.2f–%.2f]",
+    median(x, na.rm = TRUE),
+    quantile(x, 0.25, na.rm = TRUE),
+    quantile(x, 0.75, na.rm = TRUE)
+  )
+}
+
+median_iqr_with_n <- function(x) {
+  if (all(is.na(x))) return(NA_character_)
+  sprintf(
+    "%.2f [%.2f–%.2f], n=%d",
+    median(x, na.rm = TRUE),
+    quantile(x, 0.25, na.rm = TRUE),
+    quantile(x, 0.75, na.rm = TRUE),
+    sum(!is.na(x))
+  )
+}
+
+other_summary <- meta_unique %>%
+  group_by(pro_grp) %>%
+  summarise(
+    `Total SES-CD, mean (SD)` = mean_sd(total_ses_cd_score),
+    `SES-CD = 4, n (%)` = sprintf(
+      "%d (%.1f%%)",
+      sum(total_ses_cd_score == 4, na.rm = TRUE),
+      100 * mean(total_ses_cd_score == 4, na.rm = TRUE)
+    ),
+    `Fecal calprotectin, median [IQR]` = median_iqr(calprotectin),
+    `CRP, median [IQR]` = median_iqr_with_n(crp),
+    .groups = "drop"
+  ) %>%
+  tidyr::pivot_longer(
+    cols = -pro_grp,
+    names_to = "measure",
+    values_to = "value"
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = pro_grp,
+    values_from = value
+  )
+
+supp_table4 <- bind_rows(
+  other_summary %>% dplyr::filter(measure %in% c("Total SES-CD, mean (SD)", "SES-CD = 4, n (%)")),
+  segment_summary,
+  other_summary %>% dplyr::filter(measure %in% c("Fecal calprotectin, median [IQR]", "CRP, median [IQR]"))
+)
+
+write.csv(
+  supp_table4,
+  "Supplementary_Table4_endoscopic_inflammatory_characteristics.csv",
+  row.names = FALSE
+)
+
+supp_table4
+```
+
+
+
+
+# do not run below version after 09192026
+## different from the original tazble1.rmd file, updated on 08252026 after getting the major revision comments
+```{r}
+# Install required packages if not already installed
+# install.packages("tableone")
+# install.packages("readr")
+# install.packages("dplyr")
+
+# Load libraries
+library(tableone)
+library(readr)
+library(dplyr)
+library(forcats)
+
+# Load your data
+meta_data <- read_csv("data/meta_data.csv")
+
+## updated on 8/29(9 patients with >4 SES)
+## 082526
+meta_data <- meta_data %>%
+  filter(
+    total_ses_cd_score <= 4,
+    pro_grp %in% c("High-PRO", "Low-PRO")
+  )
+
+# Check the structure
+dim(meta_data)
+table(meta_data$pro_grp)
+
+meta_unique <- meta_data %>%
+  distinct(patient_id, .keep_all = TRUE) %>%
+  ## 08252026
+  mutate(
+    current_biologic_any = case_when(
+      is.na(current_biologic) ~ NA_character_,
+      current_biologic == "No" ~ "No",
+      TRUE ~ "Yes"
+    )
+  )%>%
+#meta_unique <- meta_unique %>%
+  mutate(
+    current_cd_medication = case_when(
+      current_biologic != "No" ~ "Biologics",
+      current_immunomodulator == "Yes" ~ "Immunomodulators",
+      current_steroids == "Yes" ~ "Steroids",
+      current_5_asa == "Yes" ~ "5-ASA",
+      current_med_none == "No Therapy" ~ "None",
+      TRUE ~ "Other"
+    )) %>%
+  mutate(current_cd_medication = factor(current_cd_medication,
+                                        levels = c("5-ASA", "Steroids", "Immunomodulators", "Biologics", "None", "Other")),
+    # updated on 04/16/2026 for showing missingness
+    across(c(gender, race, ethnicity, crohns_location), ~na_if(., "")),
+    gender = fct_explicit_na(factor(gender), na_level = "Missing"),
+    race = fct_explicit_na(factor(race), na_level = "Missing"),
+    ethnicity = fct_explicit_na(factor(ethnicity), na_level = "Missing"),
+    crohns_location = fct_explicit_na(factor(crohns_location), na_level = "Missing"),
+    current_cd_medication = fct_explicit_na(current_cd_medication, na_level = "Missing")
+) 
+  #filter(total_ses_cd_score <= 4)
+
+# Set your grouping variable (replace 'Group' with actual column name if different)
+# e.g., meta_data$Group might contain "high pro", "active CD", "low pro"
+group_var <- "pro_grp"
+
+# Define the variables to summarize (update based on your dataset)
+# For example:
+## 082526
+vars <- c(
+  "age",
+  "gender",
+  "race",
+  "ethnicity",
+  "bmi",
+  "time_from_diagnosis",
+  "crohns_location",
+  "current_biologic_any",
+  "current_immunomodulator",
+  "current_steroids",
+  "current_5_asa",
+  "total_ses_cd_score",
+  "calprotectin",
+  "crp",
+  "prior_small_bowel_resection",
+  "prior_colon_resection",
+  "prior_stricturoplasty",
+  "smoking_history",
+  "antibiotics"
+)
+
+# 设置分类变量（factor 类型）
+## 082526
+factor_vars <- c(
+  "gender",
+  "race",
+  "ethnicity",
+  "crohns_location",
+  "current_biologic_any",
+  "current_immunomodulator",
+  "current_steroids",
+  "current_5_asa",
+  "prior_small_bowel_resection",
+  "prior_colon_resection",
+  "prior_stricturoplasty",
+  "smoking_history",
+  "antibiotics"
+)
+
+# 将 Yes/No 类型变量和其他分类变量转为 factor
+meta_unique[factor_vars] <- lapply(meta_unique[factor_vars], factor)
+
+#sum(meta_unique$total_ses_cd_score > 4, na.rm = TRUE)
+
+# Create Table 1
+table1 <- CreateTableOne(vars = vars, 
+                         strata = group_var, 
+                         data = meta_unique, 
+                         factorVars = factor_vars,
+                         includeNA = TRUE)
+
+render_cont <- function(x) {
+  m <- mean(x, na.rm=TRUE)
+  s <- sd(x, na.rm=TRUE)
+  if (is.na(s)) {
+    sprintf("%.2f (0.00)", m)
+  } else {
+    sprintf("%.2f (%.2f)", m, s)
+  }
+}
+
+# Print Table 1
+## 082526
+table1_out <- print(
+  table1,
+  showAllLevels = TRUE,
+  test = TRUE,
+  smd = TRUE,
+  missing = TRUE,
+  nonnormal = c("calprotectin", "crp"),
+  quote = FALSE,
+  noSpaces = TRUE,
+  printToggle = FALSE
+)
+
+table1_out
+write.csv(table1_out, "Table1_revision.csv")
+```
+
+### missing data
+```{r}
+availability <- bind_rows(
+  lapply(vars, function(v) {
+    meta_unique %>%
+      group_by(pro_grp) %>%
+      summarise(
+        variable = v,
+        n_nonmissing = sum(!is.na(.data[[v]])),
+        N_total = n(),
+        .groups = "drop"
+      )
+  })
+)
+
+write.csv(
+  availability,
+  "Table1_nonmissing_denominators.csv",
+  row.names = FALSE
+)
+
+availability
+```
+
+### segment-specific endoscopic activity
+```{r}
+segment_vars <- c(
+  "ileal_ses_cd_score",
+  "right_ses_cd_score",
+  "transverse_ses_cd_score",
+  "left_ses_cd_score",
+  "rectum_ses_cd_score"
+)
+
+segment_summary <- meta_unique %>%
+  select(pro_grp, all_of(segment_vars)) %>%
+  tidyr::pivot_longer(
+    cols = all_of(segment_vars),
+    names_to = "segment",
+    values_to = "segment_ses_cd"
+  ) %>%
+  group_by(pro_grp, segment) %>%
+  summarise(
+    n_available = sum(!is.na(segment_ses_cd)),
+    median = median(segment_ses_cd, na.rm = TRUE),
+    q1 = quantile(segment_ses_cd, 0.25, na.rm = TRUE),
+    q3 = quantile(segment_ses_cd, 0.75, na.rm = TRUE),
+    n_zero = sum(segment_ses_cd == 0, na.rm = TRUE),
+    n_gt0 = sum(segment_ses_cd > 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+write.csv(
+  segment_summary,
+  "segmental_SESCD_summary.csv",
+  row.names = FALSE
+)
+
+segment_summary
+
+table(
+  meta_unique$pro_grp,
+  meta_unique$total_ses_cd_score == 4
+)
+```
+
