@@ -1,0 +1,610 @@
+---
+title: "0826sparsecca_pw"
+output: html_document
+date: "2025-08-26"
+---
+
+```{r}
+library(readr)
+library(dplyr)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+```
+## data loading
+```{r}
+ileum_df = read_csv("ileum_diff_pairs_0910.csv", show_col_types = FALSE)
+ileum_genes = ileum_df[[1]]
+#length(ileum_genes)
+ileum_genes <- ileum_genes[!is.na(ileum_genes)]    # drop NAs
+ileum_genes <- unique(ileum_genes) 
+length(ileum_genes)
+```
+```{r}
+colon_df = read_csv("colon_diff_pairs_0910.csv", show_col_types = FALSE)
+colon_genes = colon_df[[1]]
+#length(ileum_genes)
+colon_genes <- colon_genes[!is.na(colon_genes)]    # drop NAs
+colon_genes <- unique(colon_genes) 
+length(colon_genes)
+```
+## check overage
+```{r}
+# what fraction maps to OrgDb?
+mapped_frac <- sum(ileum_genes %in% keys(org.Hs.eg.db, keytype="ENSEMBL")) / length(ileum_genes)
+message(sprintf("Recognized in OrgDb: %.1f%% (%d/%d)", 100*mapped_frac, 
+                sum(ileum_genes %in% keys(org.Hs.eg.db, keytype="ENSEMBL")), length(ileum_genes)))
+```
+```{r}
+mapped_frac <- sum(colon_genes %in% keys(org.Hs.eg.db, keytype="ENSEMBL")) / length(colon_genes)
+message(sprintf("Recognized in OrgDb: %.1f%% (%d/%d)", 100*mapped_frac, 
+                sum(colon_genes %in% keys(org.Hs.eg.db, keytype="ENSEMBL")), length(colon_genes)))
+```
+```{r}
+head(ileum_df)
+colnames(ileum_df)
+range(ileum_df$U_weight)
+range(ileum_df$V_weight)
+```
+
+# 02/11/2026 updated using gsekegg()
+## prep
+```{r}
+library(enrichplot)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(dplyr)
+
+collapse_scca_to_gene <- function(df) {
+  df %>%
+    dplyr::filter(!is.na(Gene), !is.na(U_weight), !is.na(PairScore)) %>%
+    group_by(Gene) %>%
+    # choose the strongest pair per gene (max PairScore)
+    slice_max(order_by = PairScore, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    mutate(
+      score = sign(U_weight) * log10(1 + PairScore)   # recommended
+      # alternative: score = U_weight
+      # alternative: score = sign(U_weight) * abs(U_weight)
+    )
+}
+```
+```{r}
+## mapping
+map_gene_to_entrez <- function(gene_df) {
+  mapped <- bitr(
+    gene_df$Gene,
+    fromType = "ENSEMBL",
+    toType = c("ENTREZID", "SYMBOL"),
+    OrgDb = org.Hs.eg.db
+  )
+
+  gene_df %>%
+    left_join(mapped, by = c("Gene" = "ENSEMBL")) %>%
+    mutate(entrez = suppressWarnings(as.integer(ENTREZID))) %>%
+    dplyr::filter(!is.na(entrez), !is.na(score)) %>%
+    # ensure unique entrez for geneList
+    group_by(entrez) %>%
+    slice_max(order_by = abs(score), n = 1, with_ties = FALSE) %>%
+    ungroup()
+}
+```
+```{r}
+run_gsekegg_from_scca <- function(scca_df,
+                                 pvalueCutoff = 1,
+                                 minGSSize = 10,
+                                 maxGSSize = 500) {
+
+  gene_level <- collapse_scca_to_gene(scca_df)
+  gene_mapped <- map_gene_to_entrez(gene_level)
+
+  geneList <- gene_mapped$score
+  names(geneList) <- as.character(gene_mapped$entrez)
+  geneList <- sort(geneList, decreasing = TRUE)
+
+  # for cnetplot coloring
+  foldChange <- geneList
+
+  gse <- gseKEGG(
+    geneList      = geneList,
+    organism      = "hsa",
+    keyType       = "ncbi-geneid",
+    pvalueCutoff  = pvalueCutoff,
+    pAdjustMethod = "BH",
+    minGSSize     = minGSSize,
+    maxGSSize     = maxGSSize,
+    verbose       = FALSE
+  )
+
+  list(gse = gse, geneList = geneList, foldChange = foldChange, gene_mapped = gene_mapped)
+}
+```
+## run kegg
+```{r}
+out_scca_ileum <- run_gsekegg_from_scca(ileum_df, pvalueCutoff = 1, minGSSize = 8)
+
+gsekegg_scca_ileum <- out_scca_ileum$gse
+
+dim(as.data.frame(gsekegg_scca_ileum))
+head(as.data.frame(gsekegg_scca_ileum))
+colnames(as.data.frame(gsekegg_scca_ileum))
+```
+## visual updated on 02/11/2026
+```{r}
+library(ggplot2)
+library(forcats)
+library(org.Hs.eg.db)
+library(AnnotationDbi)
+library(tidyr)
+```
+```{r}
+top_k <- 2        # number of pathways to show
+# padj_cut <- 0.8    # relax to 0.1 if too few pathways
+# 
+# kegg_top <- gsekegg_scca_ileum@result %>%
+#   arrange(p.adjust) %>%
+#   dplyr::filter(p.adjust < padj_cut) %>%
+#   slice_head(n = top_k) %>%
+#   dplyr::select(Description, core_enrichment)
+
+kegg_top <- gsekegg_scca_ileum@result %>%
+  filter(!is.na(p.adjust)) %>%
+  arrange(p.adjust) %>%
+  slice_head(n = top_k) %>%
+  dplyr::select(Description, core_enrichment)
+
+kegg_core_long <- kegg_top %>%
+  separate_rows(core_enrichment, sep = "/") %>%
+  transmute(
+    Pathway = Description,
+    ENTREZID = core_enrichment
+  ) %>%
+  mutate(ENTREZID = suppressWarnings(as.integer(ENTREZID))) %>%
+  dplyr::filter(!is.na(ENTREZID)) %>%
+  distinct()
+```
+```{r}
+entrez2sym <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = as.character(unique(kegg_core_long$ENTREZID)),
+  keytype = "ENTREZID",
+  columns = c("SYMBOL")
+) %>%
+  transmute(
+    ENTREZID = suppressWarnings(as.integer(ENTREZID)),
+    SYMBOL = SYMBOL
+  ) %>%
+  dplyr::filter(!is.na(ENTREZID), !is.na(SYMBOL)) %>%
+  distinct()
+```
+```{r}
+# Map Ensembl -> Entrez + Symbol (Symbol optional but handy)
+ens_map <- bitr(
+  unique(ileum_df$Gene),
+  fromType = "ENSEMBL",
+  toType = c("ENTREZID", "SYMBOL"),
+  OrgDb = org.Hs.eg.db
+) %>%
+  transmute(
+    Gene = ENSEMBL,
+    ENTREZID = suppressWarnings(as.integer(ENTREZID)),
+    SYMBOL_fromEns = SYMBOL
+  ) %>%
+  dplyr::filter(!is.na(ENTREZID)) %>%
+  distinct(Gene, ENTREZID, .keep_all = TRUE)
+
+scca_ileum_mapped <- ileum_df %>%
+  left_join(ens_map, by = "Gene") %>%
+  dplyr::filter(!is.na(ENTREZID))
+head(scca_ileum_mapped)
+```
+```{r}
+scca_kegg_join <- kegg_core_long %>%
+  inner_join(scca_ileum_mapped, by = "ENTREZID") %>%
+  left_join(entrez2sym, by = "ENTREZID") %>%
+  mutate(
+    GeneSymbol = coalesce(SYMBOL, SYMBOL_fromEns)  # prefer Entrez mapping; fallback to Ensembl mapping
+  ) %>%
+  dplyr::filter(!is.na(GeneSymbol))
+dim(scca_kegg_join)
+head(scca_kegg_join)
+```
+```{r}
+ng <- 5
+nm <- 3
+
+top_genes <- scca_kegg_join %>%
+  group_by(Pathway, GeneSymbol) %>%
+  summarise(U = mean(U_weight, na.rm = TRUE), .groups = "drop") %>%
+  group_by(Pathway) %>%
+  slice_max(order_by = abs(U), n = ng, with_ties = FALSE) %>%
+  ungroup()
+
+top_microbes <- scca_kegg_join %>%
+  group_by(Pathway, Microbe) %>%
+  summarise(V = mean(V_weight, na.rm = TRUE), .groups = "drop") %>%
+  group_by(Pathway) %>%
+  slice_max(order_by = abs(V), n = nm, with_ties = FALSE) %>%
+  ungroup()
+
+scca_kegg_keep <- scca_kegg_join %>%
+  semi_join(top_genes, by = c("Pathway", "GeneSymbol")) %>%
+  semi_join(top_microbes, by = c("Pathway", "Microbe"))
+```
+# updated on 06072026 for font/legend/underscore
+```{r}
+library(dplyr)
+library(ggplot2)
+library(forcats)
+library(stringr)
+
+clean_label <- function(x) {
+  x %>%
+    str_replace_all("_", " ") %>%
+    str_replace_all("\\s+", " ") %>%
+    str_trim()
+}
+
+plot_long <- bind_rows(
+  scca_kegg_keep %>%
+    transmute(Pathway, EntityType = "Gene", Entity = GeneSymbol, Weight = U_weight),
+  scca_kegg_keep %>%
+    transmute(Pathway, EntityType = "Microbe", Entity = Microbe, Weight = V_weight)
+) %>%
+  distinct() %>%
+  group_by(Pathway, EntityType, Entity) %>%
+  summarise(Weight = mean(Weight, na.rm = TRUE), .groups = "drop") %>%
+  mutate(
+    Entity = clean_label(Entity),
+    Pathway = clean_label(Pathway),
+    Direction = if_else(Weight >= 0, "Positive canonical weight", "Negative canonical weight")
+  ) %>% # updated on 0607
+  group_by(Pathway, EntityType) %>%
+  # mutate(rank = rank(-abs(Weight), ties.method = "first")) %>%
+  # ungroup() %>%
+  # group_by(Pathway, EntityType) %>%
+  mutate(Entity = fct_reorder(Entity, abs(Weight), .desc = TRUE)) %>%
+  ungroup()
+
+# p <- ggplot(plot_long, aes(y = Entity, x = 1)) +
+#   geom_point(aes(size = abs(Weight), color = Weight), alpha = 0.9) +
+#   facet_grid(Pathway ~ EntityType, scales = "free_y", space = "free_y") +
+#   scale_size_area(max_size = 8, name = "|weight|") +
+#   scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, name = "direction") +
+#   labs(
+#     x = NULL, y = NULL,
+#     title = "Ileum sCCA weights within selected KEGG pathways",
+#     subtitle = "Genes (u) and Microbes (v): Dot size = |canonical weight|, Color = direction of contribution"
+#   ) +
+#   theme_bw(base_size = 11) +
+#   theme(
+#     panel.grid.minor = element_blank(),
+#     axis.text.x = element_blank(),
+#     axis.ticks.x = element_blank(),
+#     strip.text = element_text(face = "bold"),
+#     strip.background = element_rect(fill = "grey95")
+#   )
+# 
+# print(p)
+# updated on 060726
+library(ggplot2)
+library(patchwork)
+library(ragg)
+library(magick)
+library(png)
+
+save_ibd_panel_safe <- function(plot, file_base,
+                                width = 190, height = 160,
+                                units = "mm", dpi = 600) {
+  
+  png_file  <- paste0(file_base, ".png")
+  rgb_tiff  <- paste0(file_base, "_RGB.tiff")
+  cmyk_tiff <- paste0(file_base, "_CMYK.tiff")
+  
+  # Step 1: save high-res PNG first
+  ggsave(
+    filename = png_file,
+    plot = plot,
+    device = ragg::agg_png,
+    width = width,
+    height = height,
+    units = units,
+    dpi = dpi,
+    bg = "white"
+  )
+  
+  # Step 2: read PNG and flatten background
+  img <- image_read(png_file)
+  img <- image_background(img, "white", flatten = TRUE)
+  
+  # Step 3: write RGB TIFF (most stable)
+  image_write(
+    img,
+    path = rgb_tiff,
+    format = "tiff",
+    compression = "lzw",
+    density = paste0(dpi, "x", dpi)
+  )
+  
+  # Step 4: try CMYK TIFF
+  img_cmyk <- image_convert(img, colorspace = "cmyk", type = "truecolor")
+  image_write(
+    img_cmyk,
+    path = cmyk_tiff,
+    format = "tiff",
+    compression = "lzw",
+    density = paste0(dpi, "x", dpi)
+  )
+  
+  cat("RGB TIFF info:\n")
+  print(image_info(image_read(rgb_tiff)))
+  
+  cat("CMYK TIFF info:\n")
+  print(image_info(image_read(cmyk_tiff)))
+}
+
+p3 <- ggplot(plot_long, aes(y = Entity, x = 1)) +
+  geom_point(
+    aes(size = abs(Weight), color = Weight),
+    alpha = 0.95
+  ) +
+  facet_grid(Pathway ~ EntityType, scales = "free_y", space = "free_y") +
+  scale_size_area(
+    max_size = 10,
+    name = "Absolute canonical weight"
+  ) +
+  scale_color_gradient2(
+    low = "#3B5BDB",
+    mid = "white",
+    high = "#E64B35",
+    midpoint = 0,
+    name = "Canonical weight\n(relative orientation)"
+  ) +
+  labs(
+    x = NULL,
+    y = NULL
+    # optional:
+    # title = "Ileum sCCA weights within selected KEGG pathways"
+  ) +
+  theme_bw(base_size = 15) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.text.y = element_text(size = 13),
+    strip.text = element_text(face = "bold", size = 14),
+    strip.background = element_rect(fill = "grey95", color = "grey40"),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 11),
+    plot.title = element_text(size = 15, face = "bold"),
+    plot.margin = margin(8, 8, 8, 8)
+  ) +
+  guides(
+    size = guide_legend(order = 1),
+    color = guide_colorbar(order = 2)
+  )
+
+print(p3)
+
+# p3 <- ggplot(plot_long, aes(y = Entity, x = 1)) +
+#   geom_point(
+#     aes(size = abs(Weight), fill = Weight, shape = Direction),
+#     color = "grey20",
+#     alpha = 0.9,
+#     stroke = 0.4
+#   ) +
+#   facet_grid(Pathway ~ EntityType, scales = "free_y", space = "free_y") +
+#   scale_size_area(max_size = 8, name = "Absolute canonical weight") +
+#   scale_fill_gradient2(
+#     low = "#0072B2",
+#     mid = "white",
+#     high = "#D55E00",
+#     midpoint = 0,
+#     name = "Canonical weight"
+#   ) +
+#   scale_shape_manual(
+#     values = c("Negative canonical weight" = 25,
+#                "Positive canonical weight" = 21),
+#     name = "Direction"
+#   ) +
+#   labs(
+#     x = NULL,
+#     y = NULL
+#   ) +
+#   theme_bw(base_size = 14) +
+#   theme(
+#     panel.grid.minor = element_blank(),
+#     axis.text.x = element_blank(),
+#     axis.ticks.x = element_blank(),
+#     axis.text.y = element_text(size = 12),
+#     strip.text = element_text(face = "bold", size = 13),
+#     strip.background = element_rect(fill = "grey95", color = "grey40"),
+#     legend.position = "bottom",
+#     legend.box = "vertical",
+#     legend.title = element_text(size = 12, face = "bold"),
+#     legend.text = element_text(size = 11),
+#     plot.margin = margin(5, 5, 5, 5)
+#   ) +
+#   guides(
+#     size = guide_legend(order = 1),
+#     fill = guide_colorbar(order = 2),
+#     shape = guide_legend(order = 3)
+#   )
+
+save_ibd_tiff(p3, "/Users/guokexin/Documents/allenlee/manuscript/revision_072726/figures_revision/scca/Figure3_sCCA", width = 280, height = 200, dpi = 600)
+```
+
+
+
+## GO (skip from here and afterwards)
+```{r}
+ileum_go = enrichGO(
+  gene          = ileum_genes,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "ENSEMBL",
+  ont           = "BP",              # "BP", "MF", "CC"
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.2,              # FDR
+  pAdjustMethod = "BH",        # NULL if unknown
+  minGSSize     = 20,
+  maxGSSize     = 100, 
+  readable = TRUE
+)
+```
+```{r}
+colon_go = enrichGO(
+  gene          = colon_genes,
+  OrgDb         = org.Hs.eg.db,
+  keyType       = "ENSEMBL",
+  ont           = "BP",              # "BP", "MF", "CC"
+  pvalueCutoff  = 0.05,
+  qvalueCutoff  = 0.2,              # FDR
+  pAdjustMethod = "BH",        # NULL if unknown
+  minGSSize     = 20,
+  maxGSSize     = 100, 
+  readable = TRUE
+)
+```
+
+```{r}
+ileum_go_readable <- clusterProfiler::setReadable(
+  ileum_go, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL"
+)
+
+### filtering here
+res <- ileum_go_readable@result %>% arrange(p.adjust) %>% dplyr::filter(p.adjust < 0.05) %>% dplyr::filter(between(Count, 3, Inf))
+
+res = res %>%
+  mutate(padj_BH = p.adjust(pvalue, method = "BH"))
+
+res_wide <- res %>%
+  dplyr::select(any_of(c(
+    "Description","Ontology","GeneRatio","BgRatio",
+    "pvalue","p.adjust","qvalue","Count","geneID", "padj_BH"
+  ))) # "ID",
+# View in console
+print(res_wide, n = Inf)
+```
+```{r}
+colon_go_readable <- clusterProfiler::setReadable(
+  colon_go, OrgDb = org.Hs.eg.db, keyType = "ENSEMBL"
+)
+
+res_colon <- colon_go_readable@result %>% arrange(p.adjust) %>% dplyr::filter(between(Count, 2, Inf))
+res_colon = res_colon %>%
+  mutate(padj_BH = p.adjust(pvalue, method = "BH"))
+res_colon_wide <- res_colon %>%
+  dplyr::select(any_of(c(
+    "Description","Ontology","GeneRatio","BgRatio",
+    "pvalue","p.adjust","qvalue","Count","geneID", "padj_BH"
+  )))
+# View in console
+print(res_colon_wide, n = Inf)
+```
+
+
+```{r}
+res_long = res_wide %>%
+  tidyr::separate_rows(geneID, sep = "/") %>%
+  dplyr::rename(Symbol = geneID)
+res_long
+```
+
+## Visual from GO
+
+```{r}
+library(dplyr)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+
+# 1) Keep just pathway + symbol (deduplicated)
+pw_sym <- res_long %>%
+  transmute(Pathway = Description, SYMBOL = Symbol) %>%
+  distinct()
+
+# 2) Map SYMBOL -> ENSEMBL (one-to-many possible)
+sym2ens <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys    = unique(pw_sym$SYMBOL),
+  keytype = "SYMBOL",
+  columns = c("ENSEMBL")
+) %>%
+  mutate(ENSEMBL = sub("\\.\\d+$", "", ENSEMBL)) %>%  # safety: strip version if present
+  distinct(SYMBOL, ENSEMBL)
+
+# 3) Join; keep rows with a found Ensembl ID
+pw_sym_ens <- pw_sym %>%
+  left_join(sym2ens, by = "SYMBOL") %>%
+  dplyr::filter(!is.na(ENSEMBL))
+
+# Preview & save
+pw_sym_ens
+#readr::write_csv(pw_sym_ens, "pathway_gene_symbol_ensembl.csv")
+
+```
+```{r}
+#head(ileum_df)
+ileum_pairs <- ileum_df %>%
+  #rename(ENSEMBL_raw = 1) %>%                      # first column is gene id
+  mutate(ENSEMBL = Gene)
+
+# left join: keep all pathway rows; bring over microbe/u/v/PairScore/etc when present
+library(tidyr)
+ileum_pw_join <- pw_sym_ens %>%
+  left_join(ileum_pairs, by = "ENSEMBL") %>% drop_na()
+ileum_pw_join
+```
+### plot
+```{r}
+library(dplyr)
+library(tidyr)
+library(forcats)
+library(ggplot2)
+
+# use your merged/filtered table:
+df_in <- ileum_pw_join   # <- change if your object is named differently
+
+# build a long table for plotting: one row per entity (gene or microbe)
+plot_long <- bind_rows(
+  df_in %>% transmute(Pathway, EntityType = "Gene",    Entity = SYMBOL,  Weight = U_weight),
+  df_in %>% transmute(Pathway, EntityType = "Microbe", Entity = Microbe, Weight = V_weight)
+) %>%
+  distinct() %>%                       # drop duplicates if any
+  group_by(Pathway, EntityType, Entity) %>%
+  summarise(Weight = mean(Weight, na.rm = TRUE), .groups = "drop") %>%  # collapse if repeated
+  group_by(Pathway, EntityType) %>%
+  mutate(rank = rank(-abs(Weight), ties.method = "first")) %>%
+  ungroup() %>%
+  mutate(
+    # microbes first (rank stays the same), genes after microbes
+    plot_order = if_else(EntityType == "Microbe", rank, max(rank) + rank),
+    Entity = fct_reorder(Entity, plot_order, .desc = TRUE)
+  )
+  # group_by(Pathway, EntityType) %>%
+  # mutate(Entity = fct_reorder(Entity, abs(Weight), .desc = TRUE)) %>%   # order by |weight|
+  # ungroup()
+
+# plot: each pathway alone (rows), genes vs microbes (columns)
+p <- ggplot(plot_long, aes(y = Entity, x = 1)) +
+  geom_point(aes(size = abs(Weight), color = Weight), alpha = 0.9) +
+  facet_grid(Pathway ~ EntityType, scales = "free_y", space = "free_y") +
+  scale_size_area(max_size = 8, name = "|weight|") +
+  scale_color_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0, name = "direction") +
+  labs(x = NULL, y = NULL,
+       title = "Ileum sCCA weights within selected GO pathways",
+       subtitle = "Genes (u) and microbes (v): size = |weight|, color = sign") +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    strip.text = element_text(face = "bold"),
+    strip.background = element_rect(fill = "grey95")
+  )
+
+print(p)
+# ggsave("ileum_pathway_gene_microbe_dotplot.png", p, width = 12, height = 8, dpi = 300)
+
+```
+

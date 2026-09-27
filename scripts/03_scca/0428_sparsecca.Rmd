@@ -1,0 +1,727 @@
+---
+title: "0404"
+author: "Kexin Guo"
+date: "2025-02-20"
+output: pdf_document
+---
+
+```{r}
+library(tidyverse)
+```
+
+```{r}
+# load in metadata and filter only for low and high pro
+# previous before 09102025
+# metadata <- read_csv("data/ibd_sparc.csv")
+# updated on 0910
+metadata = read_csv("data/meta_data0829.csv")
+
+metadata <- metadata %>%
+  mutate(
+    patient_id = DEIDENTIFIED_MASTER_PATIENT_ID,
+    sample_id  = sample_id_y                     # or whatever column you're using
+   )
+#head(metadata)
+temp <- metadata %>%
+  dplyr::select(patient_id, sample_id, pro_grp)
+head(temp)
+# read in microbiome data
+species_count <- read_csv("data/species_specimen.nreads.csv")
+#head(species_count)
+#species_count$specimen
+
+n <- species_count$tax_name
+species_count2 <- as.data.frame(t(species_count[,-1]))
+colnames(species_count2) <- n
+#head(species_count2)
+
+# # now filter for only high and low pro patients
+# species_count3 <- species_count2 %>%
+#   rownames_to_column("sample_id") %>%
+#   merge(temp, by="sample_id") %>%
+#   #dplyr::select(-pro_grp, -shannon, -invsimp, -richness) %>%
+#   arrange(sample_id) %>%
+#   dplyr::filter(pro_grp == "Low-PRO" | pro_grp == "High-PRO") %>%
+#   dplyr::select(-pro_grp, -patient_id) %>%
+#   column_to_rownames("sample_id")
+# head(species_count3)
+```
+
+
+```{r}
+# Need to impute zeros
+library(zCompositions)
+
+zcomp <- cmultRepl(species_count2, method = "BL", z.delete=F)
+
+# next let's perform CLR transformation to for scale invariant 
+log_zcomp <- log(zcomp)
+clr_zcomp <- apply(log_zcomp, 2, function(x) x - rowMeans(log_zcomp))
+
+clr_zcomp <- as.data.frame((clr_zcomp))
+```
+```{r}
+#head(clr_zcomp, 10)
+# now filter for only high and low pro patients
+clr_zcomp1 <- clr_zcomp %>%
+  rownames_to_column("sample_id") %>%
+  merge(temp, by="sample_id") %>%
+  #dplyr::select(-pro_grp, -shannon, -invsimp, -richness) %>%
+  arrange(sample_id) %>%
+  distinct(sample_id, .keep_all = TRUE) %>%
+  dplyr::filter(pro_grp == "Low-PRO" | pro_grp == "High-PRO") %>%
+  dplyr::select(-pro_grp, -patient_id) %>%
+  column_to_rownames("sample_id")
+#head(clr_zcomp1)
+```
+
+
+vs 0219 veision(enriched) Get those species from ancom_fdr dataset that were differentially abundant with lfc > 2
+```{r}
+ancom_fdr <- read_csv("data/ancom_fdr.csv")
+
+# # take only species with lfc>2
+# ancom_fdr_filt <- ancom_fdr %>%
+#   dplyr::filter(lfc < -2)
+
+# now select species in clr_zcomp that are DA by ancom-bc
+species <- as.vector(ancom_fdr$species)
+species
+```
+select only DA species from dataset
+```{r}
+enriched_microbes <- clr_zcomp1 %>%
+  rownames_to_column("sample_id") %>%
+  arrange(sample_id) %>%
+  column_to_rownames("sample_id")
+
+# take DA microbes from ANCOM-BC, start with only enriched microbes first (lfc > 2)
+# f <- ancom_fdr %>%
+#   filter(lfc < -2)
+# 
+# f <- f$species
+
+y <- enriched_microbes %>%
+  #dplyr::select(matches(ancom_fdr$species)) %>%
+  #dplyr::filter(rownames(enriched_microbes) %in% f) %>%
+  as.matrix()
+```
+
+```{r}
+head(enriched_microbes)
+dim(enriched_microbes)
+dim(y)
+```
+
+load gene dataset
+```{r}
+# use gene data as the x matrix
+temp2 <- read_csv("data/filtered_count_matrix0910.csv") # Kexin, you will read in the gene dataset here
+#head(temp2)
+
+temp3 <- readxl::read_xlsx("data/ibd_sparc_rnaseq.xlsx")
+#head(temp3)
+```
+```{r}
+temp3 <- temp3 %>%
+  dplyr::select(DEIDENTIFIED_MASTER_PATIENT_ID, CHARACTERISTICS_BIO_MATERIAL, REQUESTED.FILE.NAME) %>%
+  distinct(DEIDENTIFIED_MASTER_PATIENT_ID, .keep_all = TRUE) %>%
+  mutate(REQUESTED.FILE.NAME = str_extract(REQUESTED.FILE.NAME, "^[^_]+")) %>%
+  mutate(CHARACTERISTICS_BIO_MATERIAL = case_when(
+    CHARACTERISTICS_BIO_MATERIAL %in% c("At 20 cm", "Rectum", "Sigmoid Colon", "Descending Colon") ~ "left_colon",
+    CHARACTERISTICS_BIO_MATERIAL %in% c("Ileum", "Cecum", "Transverse Colon", "Ascending Colon", "Other") ~ "ileum",
+    TRUE ~ CHARACTERISTICS_BIO_MATERIAL
+  ))
+  # mutate(CHARACTERISTICS_BIO_MATERIAL = recode(CHARACTERISTICS_BIO_MATERIAL,
+  #                                              "At 20 cm" = "left_colon",
+  #                                              "Rectum" = "left_colon",
+  #                                              "Sigmoid Colon" = "left_colon",
+  #                                              "Descending Colon" = "left_colon",
+  #                                              "Ileum" = "ileum",
+  #                                              "Cecum" = "ileum",
+  #                                              "Transverse Colon" = "ileum",
+  #                                              "Ascending Colon" = "ileum",
+  #                                              "Other" = "ileum"))
+# sample is the sample_id for metabolomics data (or RNAseq data in our case), patient_id will be the same across the microbiome, metabolomics, and RNAseq data
+#colnames(temp3)
+temp3 = temp3 %>%
+  rename_with(~ c("patient_id", "site", "sample_id"),
+              .cols = c("DEIDENTIFIED_MASTER_PATIENT_ID", "CHARACTERISTICS_BIO_MATERIAL", "REQUESTED.FILE.NAME"))
+
+temp3$site = factor(temp3$site, levels = c("ileum", "left_colon"))
+head(temp3)
+dim(temp3)
+```
+
+```{r}
+temp4 <- temp2 %>%
+  dplyr::select(-1) %>%
+  #rename(sample_id = sample_id_x) %>%
+  rename_with(~ "sample_id", .cols = contains("sample_id")) %>%
+  inner_join(temp3, by = "sample_id") 
+temp4_ileum <- temp4 %>%
+  dplyr::filter(site == "ileum") %>%
+  dplyr::select(sample_id, patient_id, everything()) 
+temp4_left_colon <- temp4 %>%
+  dplyr::filter(site == "left_colon") %>%
+  dplyr::select(sample_id, patient_id, everything()) 
+# head(temp4_ileum)
+# head(temp4_left_colon)
+```
+```{r}
+temp <- temp %>%
+  mutate(patient_id = as.character(patient_id))
+
+temp5_ileum <- temp4_ileum %>%
+  dplyr::rename(sample_gene = sample_id) %>%
+  mutate(patient_id = as.character(patient_id)) %>%
+  inner_join(temp, by="patient_id") %>%
+  distinct() %>%
+  arrange(sample_id) 
+#head(temp5_ileum, 3)
+dim(temp5_ileum)
+temp5_ileum_low = temp5_ileum %>%
+  dplyr::filter(pro_grp == "Low-PRO") %>%
+  dplyr::select(-pro_grp, -patient_id, -sample_gene) %>%
+  relocate(sample_id, .before = everything())
+dim(temp5_ileum_low)
+#head(temp5_ileum_low, 3)
+temp5_ileum_high = temp5_ileum %>%
+  dplyr::filter(pro_grp == "High-PRO") %>%
+  dplyr::select(-pro_grp, -patient_id, -sample_gene) %>%
+  relocate(sample_id, .before = everything())
+dim(temp5_ileum_high)
+```
+```{r}
+## in total 60+ to 40+
+temp5_left_colon <- temp4_left_colon %>%
+  dplyr::rename(sample_gene = sample_id) %>%
+  mutate(patient_id = as.character(patient_id)) %>%
+  inner_join(temp, by="patient_id") %>%
+  distinct() %>%
+  arrange(sample_id) 
+
+temp5_left_colon_low = temp5_left_colon %>%
+  dplyr::filter(pro_grp == "Low-PRO") %>%
+  dplyr::select(-pro_grp, -patient_id, -sample_gene) %>%
+  relocate(sample_id, .before = everything())
+temp5_left_colon_high = temp5_left_colon %>%
+  dplyr::filter(pro_grp == "High-PRO") %>%
+  dplyr::select(-pro_grp, -patient_id, -sample_gene) %>%
+  relocate(sample_id, .before = everything())
+#head(temp5_left_colon, 3)
+dim(temp5_left_colon)
+dim(temp5_left_colon_low)
+dim(temp5_left_colon_high)
+```
+
+
+eliminate variables(genes) that have low variance and are unlikely to be associated with the outcome
+```{r}
+library(caret)
+
+# xx <- temp5 %>%
+#   column_to_rownames("gene") %>%
+#   t %>%
+#   as.data.frame() %>%
+#   rownames_to_column("sample_id") %>%
+#   arrange(sample_id) %>%
+#   column_to_rownames("sample_id") 
+xx_ileum_low <- temp5_ileum_low 
+#%>%
+#   column_to_rownames("sample_id") %>% # Set sample_id as rownames
+#   t() %>% # Transpose the data
+#   as.data.frame()
+
+nzv1_low <- caret::nearZeroVar(xx_ileum_low, saveMetrics = T)
+#nzv[nzv[,"zeroVar"] > 0, ]
+nzv1_low <- nzv1_low[nzv1_low[,"zeroVar"] + nzv1_low[,"nzv"] > 0, ]
+
+nzv1_low <- nzv1_low %>%
+  rownames_to_column("col")
+
+drop1_low <- nzv1_low$col
+
+# remove nzv columns
+x2_ileum_low <- xx_ileum_low[, !colnames(xx_ileum_low) %in% drop1_low] %>% # Drop columns with low variance
+  #t() %>% # Transpose back to original format
+  as.data.frame()
+dim(x2_ileum_low)
+```
+```{r}
+xx_ileum_high <- temp5_ileum_high 
+nzv1_high <- caret::nearZeroVar(xx_ileum_high, saveMetrics = T)
+nzv1_high <- nzv1_high[nzv1_high[,"zeroVar"] + nzv1_high[,"nzv"] > 0, ]
+
+nzv1_high <- nzv1_high %>%
+  rownames_to_column("col")
+
+drop1_high <- nzv1_high$col
+
+# remove nzv columns
+x2_ileum_high <- xx_ileum_high[, !colnames(xx_ileum_high) %in% drop1_high] %>% # Drop columns with low variance
+  as.data.frame()
+dim(x2_ileum_high)
+```
+
+```{r}
+xx_left_colon_low <- temp5_left_colon_low 
+nzv2_low <- caret::nearZeroVar(xx_left_colon_low, saveMetrics = T)
+nzv2_low <- nzv2_low[nzv2_low[,"zeroVar"] + nzv2_low[,"nzv"] > 0, ]
+
+nzv2_low <- nzv2_low %>%
+  rownames_to_column("col")
+
+drop2_low <- nzv2_low$col
+
+# remove nzv columns
+x2_left_colon_low <- xx_left_colon_low[, !colnames(xx_left_colon_low) %in% drop2_low] %>% # Drop columns with low variance
+  #t() %>% # Transpose back to original format
+  as.data.frame()
+dim(x2_left_colon_low) # 54 to 38
+```
+```{r}
+xx_left_colon_high <- temp5_left_colon_high 
+nzv2_high <- caret::nearZeroVar(xx_left_colon_high, saveMetrics = T)
+nzv2_high <- nzv2_high[nzv2_high[,"zeroVar"] + nzv2_high[,"nzv"] > 0, ]
+
+nzv2_high <- nzv2_high %>%
+  rownames_to_column("col")
+
+drop2_high <- nzv2_high$col
+
+# remove nzv columns
+x2_left_colon_high <- xx_left_colon_high[, !colnames(xx_left_colon_high) %in% drop2_high] %>% # Drop columns with low variance
+  #t() %>% # Transpose back to original format
+  as.data.frame()
+dim(x2_left_colon_high) # 8 to 6
+```
+
+#combine high and low for both sites
+```{r}
+# Step 1: Find common genes
+common_genes <- intersect(colnames(x2_ileum_high), colnames(x2_ileum_low))
+length(common_genes)
+# Step 2: Subset the dataframes to common genes
+x2_ileum_high_common <- x2_ileum_high[, common_genes]
+x2_ileum_low_common  <- x2_ileum_low[, common_genes]
+
+# Step 3: Combine the two dataframes (row bind)
+x2_ileum_combined <- rbind(x2_ileum_high_common, x2_ileum_low_common)
+
+# Step 4: Create phenotype vector
+phenotype <- c(rep(1, nrow(x2_ileum_high_common)),   # 1 for all high_PRO samples
+               rep(0, nrow(x2_ileum_low_common)))    # 0 for all low_PRO samples
+
+```
+
+```{r}
+# Step 1: Find common genes
+common_genes_left <- intersect(colnames(x2_left_colon_high), colnames(x2_left_colon_low))
+length(common_genes_left)
+# Step 2: Subset both dataframes to the common genes
+x2_left_colon_high_common <- x2_left_colon_high[, common_genes_left]
+x2_left_colon_low_common  <- x2_left_colon_low[, common_genes_left]
+
+# Step 3: Combine the two dataframes (rows = samples)
+x2_left_colon_combined <- rbind(x2_left_colon_high_common, x2_left_colon_low_common)
+
+# Step 4: Create binary phenotype vector (1 = high PRO, 0 = low PRO)
+phenotype_left_colon <- c(rep(1, nrow(x2_left_colon_high_common)),
+                          rep(0, nrow(x2_left_colon_low_common)))
+```
+
+## updated on 09102025 fot generating files for 0428sparsecca.ipynb
+```{r}
+# ======================
+# SPLIT BY PRO GROUP
+# ======================
+
+# -- ILEUM --
+x.ileum.high <- x2_ileum_high
+x.ileum.low  <- x2_ileum_low
+
+y.ileum.high <- y %>%
+  as.data.frame() %>%
+  mutate(sample_id = rownames(.)) %>%
+  relocate(sample_id, .before = everything()) %>%
+  dplyr::filter(sample_id %in% x.ileum.high$sample_id) %>%
+  mutate(sample_id = factor(sample_id, levels = x.ileum.high$sample_id)) %>%
+  arrange(sample_id)
+
+y.ileum.low <- y %>%
+  as.data.frame() %>%
+  mutate(sample_id = rownames(.)) %>%
+  relocate(sample_id, .before = everything()) %>%
+  dplyr::filter(sample_id %in% x.ileum.low$sample_id) %>%
+  mutate(sample_id = factor(sample_id, levels = x.ileum.low$sample_id)) %>%
+  arrange(sample_id)
+
+# -- LEFT COLON --
+x.left.colon.high <- x2_left_colon_high
+x.left.colon.low  <- x2_left_colon_low
+
+y.left.colon.high <- y %>%
+  as.data.frame() %>%
+  mutate(sample_id = rownames(.)) %>%
+  relocate(sample_id, .before = everything()) %>%
+  dplyr::filter(sample_id %in% x.left.colon.high$sample_id) %>%
+  mutate(sample_id = factor(sample_id, levels = x.left.colon.high$sample_id)) %>%
+  arrange(sample_id)
+
+y.left.colon.low <- y %>%
+  as.data.frame() %>%
+  mutate(sample_id = rownames(.)) %>%
+  relocate(sample_id, .before = everything()) %>%
+  dplyr::filter(sample_id %in% x.left.colon.low$sample_id) %>%
+  mutate(sample_id = factor(sample_id, levels = x.left.colon.low$sample_id)) %>%
+  arrange(sample_id)
+```
+```{r}
+stopifnot(all(x.ileum.high$sample_id == y.ileum.high$sample_id))
+stopifnot(all(x.left.colon.high$sample_id == y.left.colon.high$sample_id))
+```
+```{r}
+dim(x.ileum.high)
+dim(x.ileum.low)
+dim(y.ileum.high)
+dim(y.ileum.low)
+```
+
+```{r}
+# Helper function
+convert_matrix <- function(df) {
+  rownames(df) <- df$sample_id
+  df <- df[, -1]
+  as.matrix(df)
+}
+
+x.ileum.high         <- convert_matrix(x.ileum.high)
+x.ileum.low          <- convert_matrix(x.ileum.low)
+x.left.colon.high    <- convert_matrix(x.left.colon.high)
+x.left.colon.low     <- convert_matrix(x.left.colon.low)
+
+y.ileum.high         <- convert_matrix(y.ileum.high)
+y.ileum.low          <- convert_matrix(y.ileum.low)
+y.left.colon.high    <- convert_matrix(y.left.colon.high)
+y.left.colon.low     <- convert_matrix(y.left.colon.low)
+```
+
+```{r}
+# Save X
+write.csv(x.ileum.high,        "x565.ileum.high.csv",        row.names = TRUE)
+write.csv(x.ileum.low,         "x565.ileum.low.csv",         row.names = TRUE)
+write.csv(x.left.colon.high,   "x565.left.colon.high.csv",   row.names = TRUE)
+write.csv(x.left.colon.low,    "x565.left.colon.low.csv",    row.names = TRUE)
+
+# Save Y
+write.csv(y.ileum.high,        "y565.ileum.high.csv",        row.names = TRUE)
+write.csv(y.ileum.low,         "y565.ileum.low.csv",         row.names = TRUE)
+write.csv(y.left.colon.high,   "y565.left.colon.high.csv",   row.names = TRUE)
+write.csv(y.left.colon.low,    "y565.left.colon.low.csv",    row.names = TRUE)
+
+```
+
+## previous code on generating high low combined datasets
+```{r}
+# y.ileum <- y %>%
+#   as.data.frame(y) %>%
+#   mutate(sample_id = rownames(y)) %>%
+#   relocate(sample_id, .before = everything()) %>%
+#   #rownames_to_column(var = "sample_id") %>%
+#   dplyr::filter(sample_id %in% x2_ileum_combined$sample_id) %>%
+#   arrange(sample_id) 
+#   #tibble::column_to_rownames("sample_id")
+x.ileum <- x2_ileum_combined 
+y.ileum <- y %>%
+  as.data.frame() %>%
+  mutate(sample_id = rownames(.)) %>%
+  relocate(sample_id, .before = everything()) %>%
+  dplyr::filter(sample_id %in% x.ileum$sample_id)   # Keep only samples in x
+  # Do NOT arrange here yet
+
+# Now, **reorder y** to match **the sample order of x**
+y.ileum <- y.ileum %>%
+  mutate(sample_id = factor(sample_id, levels = x.ileum$sample_id)) %>%  # keep original x order
+  arrange(sample_id) 
+# y.ileum.high <- y %>%
+#   as.data.frame(y) %>%
+#   mutate(sample_id = rownames(y)) %>%
+#   relocate(sample_id, .before = everything()) %>%
+#   dplyr::filter(sample_id %in% x2_ileum_high$sample_id) %>%
+#   arrange(sample_id) 
+# x.ileum.high <- x2_ileum_high 
+
+#%>%as.matrix() 
+# y.left.colon <- y %>%
+#   as.data.frame(y) %>%
+#   mutate(sample_id = rownames(y)) %>%
+#   relocate(sample_id, .before = everything()) %>%
+#   dplyr::filter(sample_id %in% x2_left_colon_combined$sample_id) %>%
+#   arrange(sample_id) 
+x.left.colon <- x2_left_colon_combined
+y.left.colon <- y %>%
+  as.data.frame() %>%
+  mutate(sample_id = rownames(.)) %>%
+  relocate(sample_id, .before = everything()) %>%
+  dplyr::filter(sample_id %in% x.left.colon$sample_id) 
+
+y.left.colon <- y.left.colon %>%
+  mutate(sample_id = factor(sample_id, levels = x.left.colon$sample_id)) %>%
+  arrange(sample_id)
+
+# y.left.colon.high <- y %>%
+#   as.data.frame(y) %>%
+#   mutate(sample_id = rownames(y)) %>%
+#   relocate(sample_id, .before = everything()) %>%
+#   dplyr::filter(sample_id %in% x2_left_colon_high$sample_id) %>%
+#   arrange(sample_id) 
+# x.left.colon.high <- x2_left_colon_high 
+#%>%as.matrix() 
+```
+```{r}
+dim(y.ileum)
+dim(y.left.colon)
+```
+
+```{r}
+# make sure that all rows in x match all rows in y
+stopifnot(all(x.ileum$sample_id == y.ileum$sample_id))
+stopifnot(all(x.left.colon$sample_id == y.left.colon$sample_id))
+# stopifnot(all(x.ileum.high$sample_id == y.ileum.high$sample_id))
+# stopifnot(all(x.left.colon.high$sample_id == y.left.colon.high$sample_id))
+```
+```{r}
+# head(x2_ileum_high_common)
+# head(x2_ileum_combined)
+```
+
+### lasso regression microbe-wise
+```{r}
+rownames(x.ileum) <- x.ileum$sample_id  # Set sample_id as row names
+x.ileum <- x.ileum[, -1]  # Remove the sample_id column
+# Convert to a numeric matrix
+x.ileum <- as.matrix(x.ileum)
+rownames(x.left.colon) <- x.left.colon$sample_id  # Set sample_id as row names
+x.left.colon <- x.left.colon[, -1]  # Remove the sample_id column
+# Convert to a numeric matrix
+x.left.colon <- as.matrix(x.left.colon)
+dim(x.ileum)
+dim(x.left.colon)
+
+# rownames(x.ileum.high) <- x.ileum.high$sample_id  # Set sample_id as row names
+# x.ileum.high <- x.ileum.high[, -1]  # Remove the sample_id column
+# # Convert to a numeric matrix
+# x.ileum.high <- as.matrix(x.ileum.high)
+# rownames(x.left.colon.high) <- x.left.colon.high$sample_id  # Set sample_id as row names
+# x.left.colon.high <- x.left.colon.high[, -1]  # Remove the sample_id column
+# # Convert to a numeric matrix
+# x.left.colon.high <- as.matrix(x.left.colon.high)
+# dim(x.ileum.high)
+# dim(x.left.colon.high)
+```
+```{r}
+rownames(y.ileum) <- y.ileum$sample_id  # Set sample_id as row names
+y.ileum <- y.ileum[, -1]  # Remove the sample_id column
+# Convert to a numeric matrix
+y.ileum <- as.matrix(y.ileum)
+rownames(y.left.colon) <- y.left.colon$sample_id  # Set sample_id as row names
+y.left.colon <- y.left.colon[, -1]  # Remove the sample_id column
+# Convert to a numeric matrix
+y.left.colon <- as.matrix(y.left.colon)
+dim(y.ileum)
+dim(y.left.colon)
+
+# rownames(y.ileum.high) <- y.ileum.high$sample_id  # Set sample_id as row names
+# y.ileum.high <- y.ileum.high[, -1]  # Remove the sample_id column
+# # Convert to a numeric matrix
+# y.ileum.high <- as.matrix(y.ileum.high)
+# rownames(y.left.colon.high) <- y.left.colon.high$sample_id  # Set sample_id as row names
+# y.left.colon.high <- y.left.colon.high[, -1]  # Remove the sample_id column
+# # Convert to a numeric matrix
+# y.left.colon.high <- as.matrix(y.left.colon.high)
+# dim(y.ileum.high)
+# dim(y.left.colon.high)
+# #colnames(y.ileum.high)
+```
+```{r}
+# Save X matrices
+write.csv(x.ileum, "x565.ileum.csv", row.names = TRUE)
+write.csv(x.left.colon,  "x565.left.colon.csv",  row.names = TRUE)
+
+# Save Y matrices
+write.csv(y.ileum, "y565.ileum.csv", row.names = TRUE)
+write.csv(y.left.colon,  "y565.left.colon.csv",  row.names = TRUE)
+
+write.csv(phenotype, "phenotype.ileum", row.names = TRUE)
+write.csv(phenotype_left_colon, "phenotype.left.colon", row.names = TRUE)
+```
+
+update for 0428 on using SmCCNet
+# SmCCNet
+```{r}
+x.ileum = read.csv("x565.ileum.csv", row.names = 1)
+y.ileum <- read.csv("y565.ileum.csv", row.names = 1)
+phenotype = read.csv("phenotype.ileum", row.names = 1)$x
+
+x.left.colon = read.csv("x565.left.colon.csv", row.names = 1)
+y.left.colon = read.csv("y565.left.colon.csv", row.names = 1)
+phenotype_left_colon = read.csv("phenotype.left.colon", row.names = 1)$x
+```
+
+```{r}
+library(SmCCNet)
+```
+
+```{r}
+table(phenotype)
+table(phenotype_left_colon)
+```
+```{r}
+sum(is.na(x.ileum))   # Count missing values
+sum(is.infinite(as.matrix(x.ileum)))   # Count Inf values
+
+sum(is.na(y.ileum)) 
+sum(is.infinite(as.matrix(y.ileum)))
+```
+```{r}
+# Select top 1500 genes by variance
+gene_variance <- apply(x.ileum, 2, var)
+top_genes <- names(sort(gene_variance, decreasing = TRUE))[1:1500]
+x_ileum_topvar <- x.ileum[, top_genes]
+x_ileum_topvar <- as.matrix(x_ileum_topvar)
+dim(x_ileum_topvar)
+length(phenotype)
+# Make sure sample orders match
+stopifnot(rownames(x_ileum_topvar) == rownames(y.ileum))
+stopifnot(length(phenotype) == nrow(x_ileum_topvar))
+```
+```{r}
+head(phenotype)
+typeof(phenotype)
+length(phenotype)
+```
+## ileum 
+```{r}
+# Ensure phenotype is factor for binary case
+phenotype <- as.factor(phenotype)
+y.ileum = as.matrix(y.ileum)
+
+# Run fastAutoSmCCNet for ileum
+result_ileum <- suppressWarnings(fastAutoSmCCNet(
+  X = list(x_ileum_topvar, y.ileum),   # two omics layers
+  Y = phenotype,          # binary labels
+  Kfold = 3,                    # 3-fold cross-validation
+  subSampNum = 100,             # number of subsampling (higher = more robust)
+  DataType = c('Gene', 'Microbe'),  # give nice names to datasets
+  saving_dir = "0428_ileum_results",  # create a new folder for results
+  EvalMethod = 'auc',           # use AUC for binary evaluation
+  summarization = 'NetSHy',     # NetSHy for module summarization
+  CutHeight = 1 - 0.1^10,       # very low cut height, keeping modules tight
+  BetweenShrinkage = 5,         # shrinkage between omics
+  ncomp_pls = 3                 # number of PLS components
+))
+```
+## left colon
+```{r}
+# Top 1500 genes
+gene_variance_left <- apply(x.left.colon, 2, var)
+top_genes_left <- names(sort(gene_variance_left, decreasing = TRUE))[1:1500]
+x_left_colon_topvar <- x.left.colon[, top_genes_left]
+
+# Ensure numeric matrices
+x_left_colon_topvar <- as.matrix(x_left_colon_topvar)
+y.left.colon <- as.matrix(y.left.colon)
+```
+```{r}
+# Run fastAutoSmCCNet
+result_left_colon <- suppressWarnings(
+  fastAutoSmCCNet(
+    X = list(x_left_colon_topvar, y.left.colon),
+    Y = as.factor(phenotype_left_colon),
+    Kfold = 3,
+    subSampNum = 100,
+    DataType = c('Gene', 'Microbe'),
+    saving_dir = "0428_leftcolon_results",
+    EvalMethod = 'auc',
+    summarization = 'NetSHy',
+    CutHeight = 1 - 0.1^10,
+    BetweenShrinkage = 5,
+    ncomp_pls = 3
+  )
+)
+```
+
+## performance
+```{r}
+#rm(list = ls())
+```
+
+
+```{r}
+load("0428_ileum_results/globalNetwork.Rdata")
+str(globalNetwork)
+```
+
+```{r}
+# library(igraph)
+# 
+# # Folder where your Rdata files are
+# subnetwork_files <- list.files(path = "0428_ileum_results", pattern = "size_.*\\.Rdata", full.names = TRUE)
+# 
+# # Initialize a list to store subnetworks
+# subnetworks <- list()
+# 
+# # Load all subnetworks
+# for (file in subnetwork_files) {
+#   before <- ls()
+#   load(file)
+#   after <- ls()
+#   new_object <- setdiff(after, before)
+#   net_object <- get(new_object)
+#   str(net_object)
+#   # Save to list with clean name
+#   subnetworks[[file]] <- net_object
+#   
+#   # Optional: Remove temporary objects
+#   rm(list = new_object)
+# }
+# 
+# # Now plot all subnetworks one by one
+# par(mfrow = c(2, 3))  # Adjust grid size depending how many modules you have
+# for (i in seq_along(subnetworks)) {
+#   g <- graph_from_adjacency_matrix(subnetworks[[i]], mode = "undirected", weighted = TRUE)
+#   plot(g, main = paste0("Subnetwork ", i), vertex.label.cex = 0.6, vertex.size = 5, edge.width = E(g)$weight * 5)
+# }
+```
+
+```{r}
+names(result_left_colon$Data[[1]])
+names(result_left_colon$Data[[2]])
+# See top genes/microbes by absolute weight
+# top_genes <- sort(abs(gene_weights_left_colon), decreasing = TRUE)
+# top_microbes <- sort(abs(microbe_weights_left_colon), decreasing = TRUE)
+# 
+# # Show top 10
+# head(top_genes, 10)
+# head(top_microbes, 10)
+```
+
+```{r}
+# library(ggplot2)
+# 
+# # Suppose cv_results has columns: GenePenalty, MicrobePenalty, TestAUC
+# ggplot(cv_results, aes(x = l1, y = l2, fill = TestMetric)) +
+#   geom_tile() +
+#   scale_fill_viridis_c(option = "C") +
+#   labs(title = "Test AUC across penalty combinations",
+#        x = "Gene Penalty",
+#        y = "Microbe Penalty") +
+#   theme_minimal()
+```
+```{r}
+# See what is inside
+names(result_ileum)
+result_left_colon$ClusteringModules
+```
+
