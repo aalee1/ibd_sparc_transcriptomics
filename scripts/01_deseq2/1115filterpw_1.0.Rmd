@@ -1,0 +1,896 @@
+---
+title: "pathway_filter_1.0"
+output:
+  pdf_document: default
+  html_document: default
+date: "2024-11-25"
+---
+
+```{r}
+rm(list = ls(all.names = TRUE)) # will clear all objects including hidden objects
+gc()
+```
+
+## Prep
+```{r}
+library(tidyverse) # includes ggplot2, for data visualisation. dplyr, for data manipulation.
+library(RColorBrewer) # for a colourful plot
+library(pheatmap)
+library(clusterProfiler) # for PEA analysis
+library('org.Hs.eg.db')
+library(DOSE)
+library(enrichplot) # for visualisations
+library(ggupset) # for visualisations
+library(dplyr)
+```
+## Data loading & transformation
+### .csv files have been updated since 02/08/2026
+### and added "stat" into the df
+```{r}
+high_low_ileum = read.csv("1115results_low_high_ileum_1.0.csv", header = TRUE, stringsAsFactors = FALSE)
+high_low_leftcolon = read.csv("1115results_low_high_left_1.0.csv", header = TRUE, stringsAsFactors = FALSE)
+
+# Rename the columns
+colnames(high_low_ileum) <- c("gene", "baseMean", "log2fc", "lfcSE", "stat", "pval", "padj", "gene_symbol", "entrez")
+high_low_ileum = high_low_ileum[, c("gene_symbol", "entrez", "stat", "pval", "padj", "log2fc", "lfcSE")]
+# Annotate according to differential expression
+high_low_ileum <- high_low_ileum %>% mutate(diffexpressed = case_when(
+  log2fc > 0 ~ 'UP',
+  log2fc < 0 ~ 'DOWN'
+))
+high_low_ileum
+
+
+colnames(high_low_leftcolon) <- c("gene", "baseMean", "log2fc", "lfcSE", "stat", "pval", "padj", "gene_symbol", "entrez")
+high_low_leftcolon = high_low_leftcolon[, c("gene_symbol", "entrez", "stat", "pval", "padj", "log2fc", "lfcSE")]
+high_low_leftcolon <- high_low_leftcolon %>% mutate(diffexpressed = case_when(
+  log2fc > 0 ~ 'UP',
+  log2fc < 0 ~ 'DOWN'
+))
+high_low_leftcolon
+```
+```{r}
+high_low_ileum$gene_symbol
+print("-------------------------------------------")
+high_low_leftcolon$gene_symbol
+```
+### might skip active comparisons
+```{r}
+high_active_ileum = read.csv("1115results_active_high_ileum_1.0.csv", header = TRUE, stringsAsFactors = FALSE)
+high_active_leftcolon = read.csv("1115results_active_high_left_1.0.csv", header = TRUE, stringsAsFactors = FALSE)
+
+# Rename the columns
+colnames(high_active_ileum) <- c("gene", "baseMean", "log2fc", "lfcSE", "stat", "pval", "padj", "gene_symbol", "entrez")
+high_active_ileum = high_active_ileum[, c("gene_symbol", "entrez", "pval", "padj", "log2fc", "lfcSE")]
+# Annotate according to differential expression
+high_active_ileum <- high_active_ileum %>% mutate(diffexpressed = case_when(
+  log2fc > 0 ~ 'UP',
+  log2fc < 0 ~ 'DOWN'
+))
+high_active_ileum
+
+
+colnames(high_active_leftcolon) <- c("gene", "baseMean", "log2fc", "lfcSE", "stat", "pval", "padj", "gene_symbol", "entrez")
+high_active_leftcolon = high_active_leftcolon[, c("gene_symbol", "entrez", "pval", "padj", "log2fc", "lfcSE")]
+high_active_leftcolon <- high_active_leftcolon %>% mutate(diffexpressed = case_when(
+  log2fc > 0 ~ 'UP',
+  log2fc < 0 ~ 'DOWN'
+))
+high_active_leftcolon
+```
+```{r}
+high_active_ileum$gene_symbol
+print("-------------------------------------------")
+high_active_leftcolon$gene_symbol
+```
+
+
+## run ClusterProfiler
+```{r}
+length(high_low_ileum$gene_symbol)
+length(high_low_leftcolon$gene_symbol)
+
+```
+
+```{r}
+enrich_low_ileum <- enrichGO(
+  gene = high_low_ileum$gene_symbol,   # DE gene list
+  OrgDb = org.Hs.eg.db,          # Human gene annotation database
+  keyType = "SYMBOL",            # Ensure gene identifiers are symbols
+  ont = "BP",                    # Ontology (e.g., Biological Process)
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.07,
+  qvalueCutoff = 0.2, 
+  minGSSize = 5,
+  maxGSSize = 500, 
+  readable = TRUE
+)
+
+enrich_low_leftcolon <- enrichGO(
+  gene = high_low_leftcolon$gene_symbol,   # DE gene list
+  OrgDb = org.Hs.eg.db,          # Human gene annotation database
+  keyType = "SYMBOL",            # Ensure gene identifiers are symbols
+  ont = "BP",                    # Ontology (e.g., Biological Process)
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.07,
+  qvalueCutoff = 0.2, 
+  minGSSize = 5,
+  maxGSSize = 500, 
+  readable = TRUE
+)
+```
+```{r}
+dim(enrich_low_ileum)
+dim(enrich_low_leftcolon)
+head(enrich_low_ileum, 10)
+head(enrich_low_leftcolon, 10)
+```
+
+## 2/08/2026 updated gseKEGG() instead of using enrichGO()
+```{r}
+geneList_ileum <- high_low_ileum %>%
+  filter(!is.na(entrez), !is.na(stat)) %>%      # 只做 NA 过滤
+  distinct(entrez, .keep_all = TRUE) %>%
+  transmute(score = stat, entrez = as.character(entrez)) %>%
+  { setNames(.$score, .$entrez) } %>%
+  sort(decreasing = TRUE)
+
+gsekegg_ileum <- gseKEGG(
+  geneList = geneList_ileum,
+  organism = "hsa",
+  keyType  = "ncbi-geneid",
+  eps = 0,
+  ### added 08282026
+  pvalueCutoff = 1,
+  ###
+  pAdjustMethod = "BH",
+  minGSSize = 10,
+  maxGSSize = 500,
+  verbose = FALSE
+)
+dim(data.frame(gsekegg_ileum))
+names(gsekegg_ileum@result)
+```
+```{r}
+geneList_leftcolon <- high_low_leftcolon %>%
+  filter(!is.na(entrez), !is.na(stat)) %>%      # 只做 NA 过滤
+  distinct(entrez, .keep_all = TRUE) %>%
+  transmute(score = stat, entrez = as.character(entrez)) %>%
+  { setNames(.$score, .$entrez) } %>%
+  sort(decreasing = TRUE)
+
+gsekegg_leftcolon <- gseKEGG(
+  geneList = geneList_leftcolon,
+  organism = "hsa",
+  keyType  = "ncbi-geneid",
+  eps = 0,
+  ### added 08282026
+  pvalueCutoff = 1,
+  ###
+  pAdjustMethod = "BH",
+  minGSSize = 10,
+  maxGSSize = 500,
+  verbose = FALSE
+)
+dim(data.frame(gsekegg_leftcolon))
+```
+
+
+### added 08282026 (to export the complete enrichment reuslts as supplementary)
+```{r}
+write.csv(
+  as.data.frame(gsekegg_ileum),
+  "/Users/guokexin/Documents/allenlee/manuscript/revision_072726/GSEA_ileum_SESCDle4_complete.csv",
+  row.names = FALSE
+)
+
+write.csv(
+  as.data.frame(gsekegg_leftcolon),
+  "/Users/guokexin/Documents/allenlee/manuscript/revision_072726/GSEA_colon_SESCDle4_complete.csv",
+  row.names = FALSE
+)
+```
+
+
+## 6/25/2025 updated visualization
+### heatmap
+```{r}
+library(ComplexHeatmap)
+library(circlize)
+library(enrichplot)
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(grid)
+# --- 1. Map terms to genes
+term_gene_df <- enrich_low_ileum@result %>%
+  dplyr::filter(p.adjust < 0.05) %>%
+  dplyr::arrange(p.adjust) %>%
+  dplyr::slice(1:15) %>%  # Top 15 terms
+  dplyr::select(Description, geneID) %>%
+  tidyr::separate_rows(geneID, sep = "/")
+# --- 2. Merge with DE info
+plot_df <- term_gene_df %>%
+  left_join(high_low_ileum, by = c("geneID" = "gene_symbol")) %>%
+  mutate(
+    direction = ifelse(log2fc > 0, "UP", "DOWN"),
+    log10padj = -log10(padj)
+  )
+
+# --- 3. Pivot to matrix form
+mat_fc <- plot_df %>%
+  dplyr::select(Description, geneID, log2fc) %>%
+  pivot_wider(names_from = geneID, values_from = log2fc) %>%
+  column_to_rownames("Description") %>%
+  as.matrix()
+
+mat_padj <- plot_df %>%
+  dplyr::select(Description, geneID, log10padj) %>%
+  pivot_wider(names_from = geneID, values_from = log10padj) %>%
+  column_to_rownames("Description") %>%
+  as.matrix()
+
+head(mat_fc)
+```
+```{r}
+# --- 4. Custom heatmap: color = direction, transparency = -log10(padj)
+# Normalize padj for alpha scaling
+padj_scaled <- mat_padj / max(mat_padj, na.rm = TRUE)
+padj_scaled[is.na(padj_scaled)] <- 0
+
+# Define color by sign of log2FC
+col_fun <- colorRamp2(c(-3, 0, 3), c("blue", "white", "red"))
+
+# Draw heatmap
+ht = Heatmap(
+  mat_fc,
+  name = "log2FC",
+  col = col_fun,
+  na_col = "grey90",
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  # cell_fun = function(j, i, x, y, width, height, fill) {
+  #   grid.rect(
+  #     x = x, y = y, width = width, height = height,
+  #     gp = gpar(
+  #       fill = adjustcolor(fill, alpha.f = padj_scaled[i, j]),
+  #       col = NA
+  #     )
+  #   )
+  # },
+  show_column_names = TRUE,
+  show_row_names = TRUE,
+  column_names_gp = gpar(fontsize = 10, rot = 45),
+  row_names_gp = gpar(fontsize = 10),
+  heatmap_legend_param = list(
+    title = "Log2FC (adj. p-value < 0.05)",
+    at = c(-3, 0, 3),
+    labels = c("Down", "Neutral", "Up")
+  )
+)
+library(grid)
+
+draw(ht,
+     heatmap_legend_side = "right",
+     #annotation_legend_list = list(signif_legend),
+     annotation_legend_side = "right",
+     column_title = "High vs Low Pro – Ileum",
+     column_title_gp = gpar(fontsize = 14, fontface = "bold"))
+
+```
+```{r}
+## different threshold on p.adjusted for lc (higher)
+# --- 1. Top enriched terms (left colon)
+term_gene_df_lc <- enrich_low_leftcolon@result %>%
+  dplyr::filter(p.adjust < 0.1) %>%
+  dplyr::arrange(p.adjust)  %>%
+  dplyr::slice(1:15) %>%  # Top 15 terms
+  dplyr::select(Description, geneID) %>%
+  tidyr::separate_rows(geneID, sep = "/")
+
+# --- 2. Merge with DE info
+plot_df_lc <- term_gene_df_lc %>%
+  left_join(high_low_leftcolon, by = c("geneID" = "gene_symbol")) %>%
+  mutate(
+    direction = ifelse(log2fc > 0, "UP", "DOWN"),
+    log10padj = -log10(padj)
+  )
+
+# --- 3. Pivot to matrix form
+mat_fc_lc <- plot_df_lc %>%
+  dplyr::select(Description, geneID, log2fc) %>%
+  pivot_wider(names_from = geneID, values_from = log2fc) %>%
+  column_to_rownames("Description") %>%
+  as.matrix()
+
+mat_padj_lc <- plot_df_lc %>%
+  dplyr::select(Description, geneID, log10padj) %>%
+  pivot_wider(names_from = geneID, values_from = log10padj) %>%
+  column_to_rownames("Description") %>%
+  as.matrix()
+
+# --- 4. Normalize padj for transparency
+padj_scaled_lc <- mat_padj_lc / max(mat_padj_lc, na.rm = TRUE)
+padj_scaled_lc[is.na(padj_scaled_lc)] <- 0
+
+# --- 5. Color scale
+col_fun <- colorRamp2(c(-3, 0, 3), c("blue", "white", "red"))
+
+# --- 6. Build heatmap
+ht_lc <- Heatmap(
+  mat_fc_lc,
+  name = "log2FC",
+  col = col_fun,
+  na_col = "grey90",
+  cluster_rows = FALSE,
+  cluster_columns = FALSE,
+  # cell_fun = function(j, i, x, y, width, height, fill) {
+  #   grid.rect(
+  #     x = x, y = y, width = width, height = height,
+  #     gp = gpar(
+  #       fill = adjustcolor(fill, alpha.f = padj_scaled_lc[i, j]),
+  #       col = NA
+  #     )
+  #   )
+  # },
+  show_column_names = TRUE,
+  show_row_names = TRUE,
+  column_names_gp = gpar(fontsize = 10, rot = 45),
+  row_names_gp = gpar(fontsize = 10),
+  heatmap_legend_param = list(
+    title = "Log2FC (adj. p-value < 0.05)",
+    at = c(-3, 0, 3),
+    labels = c("Down", "Neutral", "Up")
+  )
+)
+
+# --- 7. Draw with title
+draw(ht_lc,
+     heatmap_legend_side = "right",
+     annotation_legend_side = "right",
+     column_title = "High vs Low Pro – Left Colon",
+     column_title_gp = gpar(fontsize = 14, fontface = "bold"))
+```
+
+### 2/08/2026 updated heatmap
+```{r}
+library(dplyr)
+library(tidyr)
+library(tibble)
+library(ComplexHeatmap)
+library(circlize)
+library(grid)
+
+plot_kegg_gsea_heatmap_symbol <- function(gsea_obj,
+                                         de_tbl,
+                                         site_title = "",
+                                         top_terms = 15,
+                                         padj_term_cutoff = 0.05,
+                                         abs_log2fc_plot = NULL,   # e.g., 2; set NULL to skip
+                                         min_gene_freq = 1,        # keep genes appearing in >= this many terms
+                                         max_genes = 40) {
+
+  # --- harmonize DE table columns
+  if (!"log2fc" %in% colnames(de_tbl) && "log2FoldChange" %in% colnames(de_tbl)) {
+    de_tbl <- de_tbl %>% rename(log2fc = log2FoldChange)
+  }
+  stopifnot(all(c("entrez", "log2fc", "padj") %in% colnames(de_tbl)))
+
+  # --- 1) pathway -> entrez (core_enrichment)
+  term_gene <- gsea_obj@result %>%
+    filter(!is.na(p.adjust), p.adjust < padj_term_cutoff) %>%
+    arrange(p.adjust) %>%
+    slice_head(n = top_terms) %>%
+    select(Description, core_enrichment) %>%
+    separate_rows(core_enrichment, sep = "/") %>%
+    rename(entrez = core_enrichment) %>%
+    mutate(entrez = suppressWarnings(as.integer(entrez))) %>%
+    filter(!is.na(entrez)) %>%
+    distinct()
+
+  if (nrow(term_gene) == 0) {
+    stop("No pathways passed the p.adjust cutoff. Try increasing padj_term_cutoff or lowering top_terms.")
+  }
+
+  # --- 2) Entrez -> SYMBOL mapping
+  map_df <- AnnotationDbi::select(
+    org.Hs.eg.db,
+    keys = unique(as.character(term_gene$entrez)),
+    keytype = "ENTREZID",
+    columns = c("SYMBOL")
+  ) %>%
+    transmute(entrez = suppressWarnings(as.integer(ENTREZID)), symbol = SYMBOL) %>%
+    filter(!is.na(entrez), !is.na(symbol)) %>%
+    distinct()
+
+  # --- 3) merge with DE info + SYMBOL
+  plot_df <- term_gene %>%
+    left_join(de_tbl, by = "entrez") %>%
+    left_join(map_df, by = "entrez") %>%
+    filter(!is.na(symbol), !is.na(log2fc), !is.na(padj)) %>%
+    mutate(log10padj = -log10(padj))
+
+  # OPTIONAL: abs(log2fc) filter for plotting only
+  if (!is.null(abs_log2fc_plot)) {
+    plot_df_f <- plot_df %>% filter(abs(log2fc) >= abs_log2fc_plot)
+    if (nrow(plot_df_f) >= 20) {
+      plot_df <- plot_df_f
+    } else {
+      message("Too few genes after abs(log2fc) filter; plotting without that filter.")
+    }
+  }
+
+  # --- 4) handle duplicate SYMBOLs (multiple Entrez -> same symbol)
+  # Strategy: keep the row with largest |log2fc| within each (Description, symbol)
+  plot_df <- plot_df %>%
+    group_by(Description, symbol) %>%
+    slice_max(order_by = abs(log2fc), n = 1, with_ties = FALSE) %>%
+    ungroup()
+
+  # --- 5) build matrices (rows=pathways, cols=symbols)
+  mat_fc <- plot_df %>%
+    select(Description, symbol, log2fc) %>%
+    pivot_wider(names_from = symbol, values_from = log2fc) %>%
+    column_to_rownames("Description") %>%
+    as.matrix()
+
+  mat_padj <- plot_df %>%
+    select(Description, symbol, log10padj) %>%
+    pivot_wider(names_from = symbol, values_from = log10padj) %>%
+    column_to_rownames("Description") %>%
+    as.matrix()
+
+  # --- 6) reduce columns for readability (optional)
+  gene_freq <- colSums(!is.na(mat_fc))
+  keep <- names(gene_freq[gene_freq >= min_gene_freq])
+  if (length(keep) > 0) {
+    mat_fc <- mat_fc[, keep, drop = FALSE]
+    mat_padj <- mat_padj[, keep, drop = FALSE]
+  }
+
+  if (ncol(mat_fc) > max_genes) {
+    gene_score <- apply(abs(mat_fc), 2, function(x) max(x, na.rm = TRUE))
+    top_genes <- names(sort(gene_score, decreasing = TRUE))[1:max_genes]
+    mat_fc <- mat_fc[, top_genes, drop = FALSE]
+    mat_padj <- mat_padj[, top_genes, drop = FALSE]
+  }
+
+  # --- 7) heatmap
+  col_fun <- colorRamp2(c(-3, 0, 3), c("blue", "white", "red"))
+
+  ht <- Heatmap(
+    mat_fc,
+    name = "log2FC",
+    col = col_fun,
+    na_col = "grey90",
+    cluster_rows = FALSE,
+    cluster_columns = FALSE,
+    show_column_names = TRUE,
+    show_row_names = TRUE,
+    column_names_gp = gpar(fontsize = 9, rot = 45),
+    row_names_gp = gpar(fontsize = 10),
+    heatmap_legend_param = list(
+      title = "Log2FC (adj. p-value < 0.05)",
+      at = c(-3, 0, 3),
+      labels = c("Down", "Neutral", "Up")
+    )
+  )
+
+  draw(
+    ht,
+    heatmap_legend_side = "right",
+    annotation_legend_side = "right",
+    column_title = site_title,
+    column_title_gp = gpar(fontsize = 14, fontface = "bold")
+  )
+
+  invisible(list(mat_fc = mat_fc, mat_padj = mat_padj, plot_df = plot_df))
+}
+```
+```{r}
+# de table should be your FULL DESeq2 results for ileum
+# must include: entrez, padj, log2FoldChange (or log2fc)
+out_ileum <- plot_kegg_gsea_heatmap_symbol(
+  gsea_obj = gsekegg_ileum,
+  de_tbl = high_low_ileum,
+  site_title = "qCD+S vs qCD-S – Ileum",
+  top_terms = 10,
+  padj_term_cutoff = 0.05,
+  abs_log2fc_plot = 2,     # set NULL if you don't want this filter
+  min_gene_freq = 1,
+  max_genes = 15
+)
+out_leftcolon <- plot_kegg_gsea_heatmap_symbol(
+  gsea_obj = gsekegg_leftcolon,
+  de_tbl = high_low_leftcolon,
+  site_title = "qCD+S vs qCD-S – Rectosigmoid Colon",
+  top_terms = 10,
+  padj_term_cutoff = 0.05,
+  abs_log2fc_plot = 2,     # set NULL if you don't want this filter
+  min_gene_freq = 1,
+  max_genes = 15
+)
+
+```
+
+### forest plot
+```{r}
+# Get top GO terms per site
+top_go_ileum <- enrich_low_ileum@result %>%
+  dplyr::arrange(p.adjust) %>%
+  dplyr::slice(1:10)
+
+top_go_colon <- enrich_low_leftcolon@result %>%
+  dplyr::arrange(p.adjust) %>%
+  dplyr::slice(1:10)
+
+# Extract genes from these terms
+get_genes_from_terms <- function(enrich_result) {
+  enrich_result %>%
+    dplyr::select(Description, geneID) %>%
+    tidyr::separate_rows(geneID, sep = "/")
+}
+
+genes_ileum <- get_genes_from_terms(top_go_ileum)
+genes_colon <- get_genes_from_terms(top_go_colon)
+
+# Merge with DE results
+genes_ileum_df <- genes_ileum %>%
+  left_join(high_low_ileum, by = c("geneID" = "gene_symbol")) %>%
+  mutate(site = "Ileum")
+
+genes_colon_df <- genes_colon %>%
+  left_join(high_low_leftcolon, by = c("geneID" = "gene_symbol")) %>%
+  mutate(site = "Left Colon")
+
+# Combine
+forest_df <- bind_rows(genes_ileum_df, genes_colon_df) %>%
+  dplyr::filter(!is.na(log2fc)) %>%
+  mutate(
+    gene_term = paste(geneID, "\n(", Description, ")"),
+    lfcSE = ifelse(is.na(lfcSE), 0.2, lfcSE),  # use actual SE if available
+    lower = log2fc - 1.96 * lfcSE,
+    upper = log2fc + 1.96 * lfcSE
+  )
+
+```
+```{r}
+library(ggplot2)
+# Choose N
+top_n <- 15
+
+# Select top N genes per site by abs(log2FC)
+forest_df_limited <- forest_df %>%
+  group_by(site) %>%
+  arrange(padj) %>%
+  slice_head(n = top_n) %>%
+  ungroup()
+ggplot(forest_df_limited, aes(x = log2fc, y = reorder(gene_term, log2fc), color = ifelse(log2fc > 0, "Upregulated", "Downregulated"))) +
+  geom_point(size = 2) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  facet_wrap(~site, scales = "free_y") +
+  scale_color_manual(values = c("Downregulated" = "#1f77b4", "Upregulated" = "#d62728"), name = "Direction") +
+  labs(
+    x = "log2 Fold Change (95% CI)",
+    y = "Gene (GO Term)",
+    title = "Forest Plot of top DE Genes in Enriched GO Terms"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold")
+  )
+```
+```{r}
+ggplot(forest_df, aes(
+  x = log2fc,
+  y = reorder(geneID, log2fc),
+  color = site
+)) +
+  geom_point(size = 2, position = position_dodge(width = 0.5)) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper),
+                 height = 0.2,
+                 position = position_dodge(width = 0.5)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray50") +
+  scale_color_manual(values = c("Ileum" = "#1f77b4", "Left Colon" = "#d62728")) +
+  labs(
+    x = "log2 Fold Change (95% CI)",
+    y = "Gene",
+    title = "Comparison of DE Genes Between Sites",
+    color = "Site"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    axis.text.y = element_text(size = 10)
+  )
+
+ggplot(forest_df_limited, aes(x = log2fc, y = reorder(gene_term, log2fc), color = site)) +
+  geom_point(size = 2) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  #facet_wrap(~site, scales = "free_y") +
+  scale_color_manual(values = c("Ileum" = "#1f77b4", "Left Colon" = "#d62728")) +
+  labs(
+    x = "log2 Fold Change (95% CI)",
+    y = "Gene (GO Term)",
+    title = "Forest Plot of top DE Genes in Enriched GO Terms"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold")
+  )
+```
+### 2/08/2026 updated forest plot using kegg()
+```{r}
+## ---- A) choose top pathways per site (by p.adjust) ----
+top_kegg_ileum <- gsekegg_ileum@result %>%
+  arrange(p.adjust) %>%
+  slice_head(n = 10)
+
+top_kegg_colon <- gsekegg_leftcolon@result %>%
+  arrange(p.adjust) %>%
+  slice_head(n = 10)
+
+## ---- B) extract leading-edge genes from pathways ----
+get_entrez_from_gsea_terms <- function(gsea_term_df) {
+  gsea_term_df %>%
+    select(Description, core_enrichment) %>%
+    separate_rows(core_enrichment, sep = "/") %>%
+    rename(entrez = core_enrichment) %>%
+    mutate(entrez = suppressWarnings(as.integer(entrez))) %>%
+    filter(!is.na(entrez)) %>%
+    distinct()
+}
+
+genes_ileum <- get_entrez_from_gsea_terms(top_kegg_ileum) %>% mutate(site = "Ileum")
+genes_colon <- get_entrez_from_gsea_terms(top_kegg_colon) %>% mutate(site = "Rectosigmoid Colon")
+
+## ---- C) map Entrez -> SYMBOL for labels ----
+all_entrez <- unique(c(genes_ileum$entrez, genes_colon$entrez))
+
+entrez2sym <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = as.character(all_entrez),
+  keytype = "ENTREZID",
+  columns = c("SYMBOL")
+) %>%
+  transmute(entrez = suppressWarnings(as.integer(ENTREZID)), gene_symbol = SYMBOL) %>%
+  filter(!is.na(entrez), !is.na(gene_symbol)) %>%
+  distinct()
+
+## ---- D) choose DE tables (prefer FULL DESeq2 results tables) ----
+## These should have: entrez, padj, log2fc (or log2FoldChange), lfcSE (optional but good)
+de_ileum <- high_low_ileum
+de_colon <- high_low_leftcolon
+
+if (!"log2fc" %in% colnames(de_ileum) && "log2FoldChange" %in% colnames(de_ileum)) {
+  de_ileum <- de_ileum %>% rename(log2fc = log2FoldChange)
+}
+if (!"log2fc" %in% colnames(de_colon) && "log2FoldChange" %in% colnames(de_colon)) {
+  de_colon <- de_colon %>% rename(log2fc = log2FoldChange)
+}
+
+## ---- E) merge genes with DE results ----
+genes_ileum_df <- genes_ileum %>%
+  left_join(entrez2sym, by = "entrez") %>%
+  left_join(de_ileum, by = "entrez")
+
+genes_colon_df <- genes_colon %>%
+  left_join(entrez2sym, by = "entrez") %>%
+  left_join(de_colon, by = "entrez")
+
+forest_df <- bind_rows(genes_ileum_df, genes_colon_df) %>%
+  filter(!is.na(log2fc), !is.na(gene_symbol.x)) %>%
+  mutate(
+    gene_term = paste0(gene_symbol.x, "\n(", Description, ")"),
+    lfcSE = ifelse(is.na(lfcSE), 0.2, lfcSE),  # fallback only if needed
+    lower = log2fc - 1.96 * lfcSE,
+    upper = log2fc + 1.96 * lfcSE
+  )
+```
+```{r}
+library(ggplot2)
+top_n <- 5
+
+forest_df_limited <- forest_df %>%
+  mutate(gene_symbol = gene_symbol.x) %>%                 # your current column name
+  filter(!is.na(gene_symbol), !is.na(padj), !is.na(log2fc)) %>%
+  group_by(site, gene_symbol) %>%
+  arrange(padj, desc(abs(log2fc)), .by_group = TRUE) %>%  # choose representative pathway per gene
+  slice(1) %>%
+  ungroup() %>%
+  group_by(site) %>%
+  arrange(padj, desc(abs(log2fc)), .by_group = TRUE) %>%  # then pick top genes per site
+  slice_head(n = top_n) %>%
+  ungroup() %>%
+  mutate(
+    gene_term = paste0(gene_symbol, "\n(", Description, ")")  # re-make label after dedup
+  )
+
+ggplot(
+  forest_df_limited,
+  aes(
+    x = log2fc,
+    y = reorder(gene_term, log2fc),
+    color = ifelse(log2fc > 0, "Upregulated", "Downregulated")
+  )
+) +
+  geom_point(size = 2) +
+  geom_errorbarh(aes(xmin = lower, xmax = upper), height = 0.2) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  facet_wrap(~site, scales = "free_y") +
+  scale_color_manual(
+    values = c("Downregulated" = "#1f77b4", "Upregulated" = "#d62728"),
+    name = "Direction"
+  ) +
+  labs(
+    x = "log2 Fold Change (95% CI)",
+    y = "Gene (KEGG Pathway)",
+    title = "Forest Plot of Leading-edge DE Genes in Top KEGG Pathways"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "top",
+    strip.text = element_text(face = "bold")
+  )
+
+```
+
+
+
+## original visualization
+```{r}
+### high vs low in ileum
+## Dotplot 
+dotplot(enrich_low_ileum, showCategory=15, size = "Count")
+#barplot(enrich_results_go, showCategory = 20) 
+# concept
+cnetplot(enrich_low_ileum, showCategory = 10)
+# Heatplot
+heatplot(enrich_low_ileum)
+## Enrichmap clusters the xx most significant (by padj) GO terms to visualize relationships between terms
+enrich_low_ileum_pair = pairwise_termsim(enrich_low_ileum)
+emapplot(enrich_low_ileum_pair, showCategory = 10)
+```
+```{r}
+### high vs low in left colon
+## Dotplot 
+dotplot(enrich_low_leftcolon, showCategory=15, size = "Count")
+#barplot(enrich_results_go, showCategory = 20) 
+# concept
+cnetplot(enrich_low_leftcolon, showCategory = 10)
+# Heatplot
+heatplot(enrich_low_leftcolon)
+## Enrichmap clusters the xx most significant (by padj) GO terms to visualize relationships between terms
+enrich_low_leftcolon_pair = pairwise_termsim(enrich_low_leftcolon)
+emapplot(enrich_low_leftcolon_pair, showCategory = 10)
+```
+
+```{r}
+enrich_active_ileum <- enrichGO(
+  gene = high_active_ileum$gene_symbol,   # DE gene list
+  OrgDb = org.Hs.eg.db,          # Human gene annotation database
+  keyType = "SYMBOL",            # Ensure gene identifiers are symbols
+  ont = "BP",                    # Ontology (e.g., Biological Process)
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.2, 
+  minGSSize = 10,
+  maxGSSize = 500, 
+  readable = TRUE
+)
+
+enrich_active_leftcolon <- enrichGO(
+  gene = high_active_leftcolon$gene_symbol,   # DE gene list
+  OrgDb = org.Hs.eg.db,          # Human gene annotation database
+  keyType = "SYMBOL",            # Ensure gene identifiers are symbols
+  ont = "BP",                    # Ontology (e.g., Biological Process)
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.2, 
+  minGSSize = 10,
+  maxGSSize = 500, 
+  readable = TRUE
+)
+```
+```{r}
+### high vs active in ileum
+## Dotplot 
+dotplot(enrich_active_ileum, showCategory=15, size = "Count")
+#barplot(enrich_results_go, showCategory = 20) 
+# concept
+cnetplot(enrich_active_ileum, showCategory = 10)
+# Heatplot
+heatplot(enrich_active_ileum)
+## Enrichmap clusters the xx most significant (by padj) GO terms to visualize relationships between terms
+enrich_active_ileum_pair = pairwise_termsim(enrich_active_ileum)
+emapplot(enrich_active_ileum_pair, showCategory = 10)
+```
+
+```{r}
+### high vs active in left colon
+## Dotplot 
+dotplot(enrich_active_leftcolon, showCategory=15, size = "Count")
+#barplot(enrich_results_go, showCategory = 20) 
+# concept
+cnetplot(enrich_active_leftcolon, showCategory = 10)
+# Heatplot
+heatplot(enrich_active_leftcolon)
+## Enrichmap clusters the xx most significant (by padj) GO terms to visualize relationships between terms
+enrich_active_leftcolon_pair = pairwise_termsim(enrich_active_leftcolon)
+emapplot(enrich_active_leftcolon_pair, showCategory = 10)
+```
+
+
+```{r}
+### left colon are all unmatched genes
+# library(AnnotationDbi)  # Provides mapping functions
+# library(EnsDb.Hsapiens.v86)
+# mapped_genes <- mapIds(EnsDb.Hsapiens.v86,
+#                        keys = high_low_leftcolon$gene_symbol,
+#                        column = "ENTREZID",
+#                        keytype = "SYMBOL",
+#                        multiVals = "first")  # 'first' chooses the first mapping if multiple exist
+# mapped_genes
+```
+```{r}
+# # Remove NA (unmapped) genes
+# mapped_genes <- na.omit(mapped_genes)
+# 
+# enrich_results_leftcolon <- enrichGO(
+#   gene = mapped_genes,   # DE gene list
+#   OrgDb = org.Hs.eg.db,          # Human gene annotation database
+#   keyType = "ENTREZID",            # Ensure gene identifiers are symbols
+#   ont = "BP",                    # Ontology (e.g., Biological Process)
+#   pAdjustMethod = "BH",
+#   pvalueCutoff = 0.05,
+#   qvalueCutoff = 0.2,
+#   minGSSize = 10,
+#   maxGSSize = 500,
+#   readable = TRUE
+# )
+```
+```{r}
+# library(DECIPHER)
+```
+
+```{r}
+### prep for gseGO (ranked by log2foldchange)
+# gene_list_leftcolon <- high_low_leftcolon$log2fc
+# names(gene_list_leftcolon) <- high_low_leftcolon$gene_symbol
+# 
+# # Sort the genes by log2 fold change for ranking (required for GSEA)
+# gene_list_leftcolon <- sort(gene_list_leftcolon, decreasing = TRUE)
+# gene_list_leftcolon
+```
+```{r}
+# gsea_results_ileum <- gseGO(
+#   geneList = gene_list_leftcolon,         # Ranked gene list
+#   OrgDb = org.Hs.eg.db,               # Gene annotation database
+#   keyType = "SYMBOL",                 # Gene identifier (symbols in your case)
+#   ont = "BP",                         
+#   minGSSize = 10,                     # Minimum gene set size
+#   maxGSSize = 500,                    # Maximum gene set size
+#   pvalueCutoff = 0.05,                # P-value threshold
+#   pAdjustMethod = "BH",               # Adjust p-values with Benjamini-Hochberg
+#   verbose = TRUE
+# )
+
+```
+
+
+```{r}
+# ## Dotplot 
+# dotplot(enrich_results_leftcolon, showCategory=15, size = "Count")
+# #barplot(enrich_results_go, showCategory = 20) 
+# # concept
+# cnetplot(enrich_results_leftcolon, showCategory = 10)
+# # Heatplot
+# heatplot(enrich_results_leftcolon)
+# ## Enrichmap clusters the xx most significant (by padj) GO terms to visualize relationships between terms
+# enrich_results_leftcolon_pair = pairwise_termsim(enrich_results_leftcolon)
+# emapplot(enrich_results_leftcolon_pair, showCategory = 10)
+```

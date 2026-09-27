@@ -1,0 +1,510 @@
+---
+title: "1108filterDE"
+author: "Kexin Guo"
+date: "2024-11-05"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# DE analysis including only gene and pro_grp into the model
+## prep
+```{r}
+rm(list = ls())
+library(DESeq2)
+library(dplyr)
+library(data.table)
+library(BiocParallel)
+register(MulticoreParam(4))
+```
+
+## data loading
+```{r}
+merge_data = fread('merge.csv')
+merge_data = merge_data[pro_grp != "", -1, with = FALSE]
+merge_data = as.data.frame(merge_data)
+#typeof(genes)
+head(merge_data)
+```
+
+## DESeq2 workflow
+```{r}
+#count_matrix_gene = fread('count_matrix_gene.csv')
+count_matrix_gene = merge_data[, 1:(ncol(merge_data)-109-196355+1)]
+head(count_matrix_gene)
+count_matrix_gene = data.frame(count_matrix_gene)
+#head(count_matrix_gene)
+```
+### filtering non-coding genes
+```{r}
+geneid = data.frame(ensembl_gene_id = colnames(count_matrix_gene)[-1])
+dim(geneid)
+#head(geneid,2)
+```
+
+```{r}
+## with more unmatched ensembl
+## maybe try v86 later
+library(EnsDb.Hsapiens.v79)
+anno <- ensembldb::select(
+  EnsDb.Hsapiens.v79,
+  keys = geneid$ensembl_gene_id,
+  keytype = "GENEID",
+  columns = c("SYMBOL", "GENEBIOTYPE")
+)
+# length(anno$SYMBOL)
+# # Filter out symbols that start with 'RNA5S'
+# filtered_anno <- anno[!grepl("^RNA5S", anno$SYMBOL), ]
+# 
+# # Display the filtered results
+# length(filtered_anno$SYMBOL)
+# head(anno)
+
+# library(EnsDb.Hsapiens.v86)
+# anno <- ensembldb::select(
+#   EnsDb.Hsapiens.v86,
+#   keys = geneid$ensembl_gene_id,
+#   keytype = "GENEID",
+#   columns = c("SYMBOL", "GENEBIOTYPE")
+# )
+head(anno, 3)
+dim(anno)
+```
+
+```{r}
+# library(biomaRt)
+# mart <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+# annotations <- getBM(
+#   attributes = c("ensembl_gene_id", "hgnc_symbol", "gene_biotype"),
+#   filters = "ensembl_gene_id",
+#   values = geneid$ensembl_gene_id,
+#   mart = mart
+#   #mart = useDataset("hsapiens_gene_ensembl", useMart("ENSEMBL_MART_ENSEMBL"))
+# )
+# head(annotations, 3)
+# dim(annotations)
+#table(annotations$hgnc_symbol)
+```
+use anno <- ensembldb::select(
+  EnsDb.Hsapiens.v86,
+  keys = geneid$ensembl_gene_id,
+  keytype = "GENEID",
+  columns = c("SYMBOL", "GENEBIOTYPE")
+) to get anno
+
+```{r}
+table(anno$GENEBIOTYPE)
+```
+
+```{r}
+# Extract protein-coding genes from the annotation data
+# protein_coding_genes <- anno$GENEID[anno$GENEBIOTYPE == "protein_coding"]
+protein_coding_genes = anno$GENEID[anno$GENEBIOTYPE %in% c("protein_coding", "lincRNA")]
+
+# Subset `count_matrix_gene` to retain only columns (gene IDs) that are in `protein_coding_genes`
+filtered_count_matrix <- count_matrix_gene[, c(TRUE, colnames(count_matrix_gene)[-1] %in% protein_coding_genes)]
+
+# Check the dimensions of the filtered matrix
+dim(filtered_count_matrix)
+head(filtered_count_matrix)
+```
+```{r}
+write.csv(filtered_count_matrix, "filtered_count_matrix0910.csv")
+```
+
+## updated on 8/29/2025 on metadata
+```{r}
+#meta_data = fread('meta_data.csv')
+meta_data = data.frame(sample_id = merge_data$REQUESTED.FILE.NAME, merge_data[, (ncol(merge_data)-108):ncol(merge_data)])
+
+## updated on 8/29(9 patients with >4 SES)
+meta_data = meta_data %>%
+  dplyr::filter(total_ses_cd_score <= 4)
+
+head(meta_data)
+dim(meta_data)
+```
+```{r}
+write.csv(meta_data, "meta_data0829.csv")
+```
+
+```{r}
+# # count matrix with only gene (no transcript)
+# count_matrix_gene = merge_data[, 1:(ncol(merge_data)-109-196355+1)]
+# tail(rownames(t(count_matrix_gene)), 10)
+# # all meta data
+# meta_data = data.frame(sample_id = merge_data$REQUESTED.FILE.NAME, merge_data[, (ncol(merge_data)-108):ncol(merge_data)])
+# head(meta_data)
+```
+
+### donot need to run everytime (those files are non-filtered)
+```{r}
+# write.csv(count_matrix_gene, "count_matrix_gene.csv")
+# write.csv(meta_data, "meta_data.csv")
+```
+
+# updating on 02/08/2026 (use from metadata0829 & filtered_count_matrix0910)
+# RUN FROM HERE
+```{r}
+rm(list = ls())
+library(readr)
+library(DESeq2)
+library(dplyr)
+library(data.table)
+library(BiocParallel)
+library(EnsDb.Hsapiens.v79)
+register(MulticoreParam(4))
+```
+```{r}
+meta_data = data.frame(read_csv("meta_data0829.csv"))
+filtered_count_matrix = data.frame(read_csv("filtered_count_matrix0910.csv"))
+```
+```{r}
+meta_data = meta_data[, -1]
+dim(meta_data)
+filtered_count_matrix = filtered_count_matrix[, -1]
+dim(filtered_count_matrix)
+```
+
+### 08252026 added
+```{r}
+table(meta_data$CHARACTERISTICS_BIO_MATERIAL,
+      meta_data$pro_grp)
+
+length(unique(meta_data$patient_id))
+```
+
+
+
+## process to separate data by sites
+```{r}
+meta_data$CHARACTERISTICS_BIO_MATERIAL <- factor(meta_data$CHARACTERISTICS_BIO_MATERIAL)
+meta_data$CHARACTERISTICS_BIO_MATERIAL <- recode(meta_data$CHARACTERISTICS_BIO_MATERIAL,
+                                          "At 20 cm" = "left_colon",
+                                          "Rectum" = "left_colon",
+                                          "Sigmoid Colon" = "left_colon",
+                                          "Descending Colon" = "left_colon",
+                                          "Ileum" = "ileum",
+                                          "Cecum" = "ileum",
+                                          "Transverse Colon" = "ileum",
+                                          "Ascending Colon" = "ileum", 
+                                          "Other" = "ileum")
+table(meta_data$CHARACTERISTICS_BIO_MATERIAL)
+meta_data$CHARACTERISTICS_BIO_MATERIAL = factor(meta_data$CHARACTERISTICS_BIO_MATERIAL, levels = c("ileum", "left_colon"))
+
+
+meta_data$pro_grp = factor(meta_data$pro_grp, levels = c("High-PRO", "Low-PRO", "Active CD"))
+```
+```{r}
+# Subsetting meta_data by CHARACTERISTICS_BIO_MATERIAL
+meta_data_ileum <- subset(meta_data, CHARACTERISTICS_BIO_MATERIAL == "ileum")
+meta_data_ileum = meta_data_ileum[!is.na(meta_data_ileum$pro_grp), ]
+meta_data_left_colon <- subset(meta_data, CHARACTERISTICS_BIO_MATERIAL == "left_colon")
+meta_data_left_colon = meta_data_left_colon[!is.na(meta_data_left_colon$pro_grp), ]
+
+meta_data_ileum = meta_data_ileum %>% distinct(sample_id, .keep_all = TRUE) 
+meta_data_left_colon = meta_data_left_colon %>% distinct(sample_id, .keep_all = TRUE) 
+dim(meta_data_ileum)
+dim(meta_data_left_colon)
+```
+```{r}
+length(meta_data_ileum$sample_id)
+length(filtered_count_matrix$sample_id_x)
+
+```
+
+```{r}
+#head(count_matrix_gene)
+# count_matrix_gene_ileum <- filtered_count_matrix[filtered_count_matrix$sample_id_x %in% meta_data_ileum$sample_id, ]
+# count_matrix_gene_left_colon <- filtered_count_matrix[filtered_count_matrix$sample_id_x %in% meta_data_left_colon$sample_id, ]
+
+## 没用的
+# count_matrix_gene_ileum = count_matrix_gene_ileum[!duplicated(count_matrix_gene_ileum$sample_id_x)]
+# count_matrix_gene_left_colon = count_matrix_gene_left_colon[meta_data_left_colon$sample_id, , drop = FALSE]
+
+count_matrix_gene_ileum = filtered_count_matrix %>%
+  dplyr::filter(sample_id_x %in% meta_data_ileum$sample_id) %>%
+  distinct(sample_id_x, .keep_all = TRUE) %>%
+  arrange(match(sample_id_x, meta_data_ileum$sample_id))
+
+count_matrix_gene_left_colon = filtered_count_matrix %>%
+  dplyr::filter(sample_id_x %in% meta_data_left_colon$sample_id) %>%
+  distinct(sample_id_x, .keep_all = TRUE) %>%
+  arrange(match(sample_id_x, meta_data_left_colon$sample_id))
+
+dim(count_matrix_gene_ileum)
+dim(count_matrix_gene_left_colon)
+count_matrix_gene_ileum = count_matrix_gene_ileum[, 2: ncol(count_matrix_gene_ileum)]
+count_matrix_gene_left_colon = count_matrix_gene_left_colon[, 2: ncol(count_matrix_gene_left_colon)]
+head(count_matrix_gene_ileum)
+```
+
+
+
+```{r}
+table(meta_data_left_colon$pro_grp)
+length(meta_data_left_colon$pro_grp)
+```
+```{r}
+dim(meta_data_ileum)
+dim(count_matrix_gene_ileum)
+dim(meta_data_left_colon)
+dim(count_matrix_gene_left_colon)
+```
+
+
+## create DESeq object
+```{r}
+count_matrix_gene_ileum = as.matrix(count_matrix_gene_ileum)
+dds_ileum <- DESeqDataSetFromMatrix(countData = t(count_matrix_gene_ileum),
+                              colData = meta_data_ileum,
+                              design = ~ pro_grp) 
+```
+```{r}
+count_matrix_gene_left_colon = as.matrix(count_matrix_gene_left_colon)
+dds_left_colon = DESeqDataSetFromMatrix(countData = t(count_matrix_gene_left_colon), colData = meta_data_left_colon, design = ~ pro_grp)
+```
+
+## exploratory
+### pre-filtering
+```{r}
+# ileum
+smallestGroupSize = 3
+keep1 = rowSums(counts(dds_ileum) >= 10) >= smallestGroupSize  #keep only rows that have a count of at least 10 for a minimal number of samples
+dds_ileum = dds_ileum[keep1,]
+# left colon
+smallestGroupSize = 3
+keep2 = rowSums(counts(dds_left_colon) >= 10) >= smallestGroupSize  #keep only rows that have a count of at least 10 for a minimal number of samples
+dds_left_colon = dds_left_colon[keep2,]
+```
+
+### factor
+```{r}
+#dds$MACROSCOPIC_APPEARANCE = factor(dds$MACROSCOPIC_APPEARANCE)
+dds_ileum$pro_grp = factor(dds_ileum$pro_grp)
+dds_left_colon$pro_grp = factor(dds_left_colon$pro_grp)
+#dds$anxiety = factor(dds$anxiety)
+```
+
+### transform the counts using variance stabilizing transformation (VST)
+```{r}
+# vsd <- vst(dds, blind = FALSE)
+# length(assay(vsd))
+# head(assay(vsd)[,1:2], 2)
+# dim(assay(vsd))
+# #colData(vsd)
+```
+
+### Scatterplot of transformed counts ???
+
+### sample distances
+```{r}
+# sampleDists <- dist(t(assay(vsd)))
+```
+```{r}
+library("pheatmap")
+library("RColorBrewer")
+```
+
+## differential expression pipeline
+```{r}
+## Run analysis
+dds_ileum <- DESeq(dds_ileum)
+dds_left_colon = DESeq(dds_left_colon)
+```
+
+### High vs Low contrast
+```{r}
+library(apeglm)
+library(ashr)
+resultsNames(dds_ileum)
+resultsNames(dds_left_colon)
+## remove , lfcThreshold=1.5
+# High_pro vs low_pro
+ileum_high_vs_low <- results(dds_ileum, contrast=c("pro_grp", "High-PRO", "Low-PRO"))
+head(ileum_high_vs_low)
+left_colon_high_vs_low = results(dds_left_colon, contrast = c("pro_grp", "High-PRO", "Low-PRO"))
+#head(left_colon_high_vs_low)
+```
+```{r}
+# print("number of sig(0.05):")
+# resSig_high_low <- subset(res_high_vs_low, padj < 0.1)
+# print(sum(res_high_vs_low$padj < 0.1))
+print("Gene ordered by log2fold change:")
+head(ileum_high_vs_low[order(ileum_high_vs_low$log2FoldChange, decreasing = TRUE), ])
+head(left_colon_high_vs_low[order(left_colon_high_vs_low$log2FoldChange, decreasing = TRUE), ])
+```
+
+### High vs Active (omitted from year 2026)
+```{r}
+ileum_high_vs_active <- results(dds_ileum, contrast=c("pro_grp", "High-PRO", "Active CD"))
+#head(ileum_high_vs_active)
+left_colon_high_vs_active = results(dds_left_colon, contrast = c("pro_grp", "High-PRO", "Active CD"))
+```
+```{r}
+# print("number of sig(0.05):")
+# resSig_high_active <- subset(res_high_vs_active, padj < 0.05)
+# table(resSig_high_active)
+print("Gene ordered by log2fold change:")
+head(ileum_high_vs_active[order(ileum_high_vs_active$log2FoldChange, decreasing = TRUE), ])
+head(left_colon_high_vs_active[order(left_colon_high_vs_active$log2FoldChange, decreasing = TRUE), ])
+```
+
+## annotating and exporting
+```{r}
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+# BiocManager::install("org.Hs.eg.db")
+```
+```{r}
+columns(org.Hs.eg.db)
+```
+```{r}
+# high vs low result
+ens.str <- substr(rownames(ileum_high_vs_low), 1, 15)
+ileum_high_vs_low$symbol <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+ileum_high_vs_low$entrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+print("------------------------------------------")
+ens.str <- substr(rownames(left_colon_high_vs_low), 1, 15)
+left_colon_high_vs_low$symbol <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+left_colon_high_vs_low$entrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+## latest output files for pathway analysis updated on 02/08/2026 
+## (remove the filtering on abs(log2fc) & padj for better performance using gseKEGG()), and should be redone this after pathway analysis
+```{r}
+## loose the results 
+res_low_ileum <- as.data.frame(ileum_high_vs_low[order(-abs(ileum_high_vs_low$log2FoldChange), ileum_high_vs_low$padj),])
+library(readr)
+library(dplyr)
+res_low_ileum <- res_low_ileum %>%
+  dplyr::filter(!is.na(symbol) & !is.na(entrez)) %>%
+  # dplyr::filter(abs(log2FoldChange) > 2) %>%
+  mutate(padj = p.adjust(pvalue, method = "BH")) %>%
+  # dplyr::filter(padj < 0.05) %>%
+  arrange(padj) 
+dim(res_low_ileum)
+res_low_ileum
+print("------------------------------------------")
+res_low_left_colon <- as.data.frame(left_colon_high_vs_low[order(-abs(left_colon_high_vs_low$log2FoldChange), left_colon_high_vs_low$padj),])
+#resOrdered_low_DF <- as.data.frame(resOrdered_low)
+library(readr)
+library(dplyr)
+res_low_left_colon <- res_low_left_colon %>%
+  dplyr::filter(!is.na(symbol) & !is.na(entrez)) %>%
+  # dplyr::filter(abs(log2FoldChange) > 2) %>%
+  mutate(padj = p.adjust(pvalue, method = "BH")) %>%
+  # dplyr::filter(padj < 0.05) %>%
+  arrange(padj) 
+dim(res_low_left_colon)
+res_low_left_colon
+```
+## (latest output files for pathway analysis on 09012025)
+```{r}
+write.csv(res_low_left_colon, file = "1115results_low_high_left_1.0.csv")
+write.csv(res_low_ileum, file = "1115results_low_high_ileum_1.0.csv")
+```
+
+```{r}
+# high vs active result
+ens.str <- substr(rownames(ileum_high_vs_active), 1, 15)
+ileum_high_vs_active$symbol <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+ileum_high_vs_active$entrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+print("------------------------------------------")
+ens.str <- substr(rownames(left_colon_high_vs_low), 1, 15)
+left_colon_high_vs_active$symbol <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="SYMBOL",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+left_colon_high_vs_active$entrez <- mapIds(org.Hs.eg.db,
+                     keys=ens.str,
+                     column="ENTREZID",
+                     keytype="ENSEMBL",
+                     multiVals="first")
+```
+```{r}
+res_active_ileum <- as.data.frame(ileum_high_vs_active[order(-abs(ileum_high_vs_active$log2FoldChange), ileum_high_vs_active$padj),])
+res_active_ileum <- res_active_ileum %>%
+  filter(!is.na(symbol) & !is.na(entrez)) %>%
+  filter(abs(log2FoldChange) > 2) %>%
+  mutate(padj = p.adjust(pvalue, method = "BH")) %>%
+  filter(padj < 0.05) %>%
+  arrange(padj) 
+dim(res_active_ileum)
+res_active_ileum
+print("------------------------------------------")
+res_active_left_colon <- as.data.frame(left_colon_high_vs_active[order(-abs(left_colon_high_vs_active$log2FoldChange), left_colon_high_vs_active$padj),])
+res_active_left_colon <- res_active_left_colon %>%
+  filter(!is.na(symbol) & !is.na(entrez)) %>%
+  filter(abs(log2FoldChange) > 2) %>%
+  mutate(padj = p.adjust(pvalue, method = "BH")) %>%
+  filter(padj < 0.05) %>%
+  arrange(padj) 
+dim(res_active_left_colon)
+res_active_left_colon
+```
+```{r}
+write.csv(res_active_left_colon, file = "1115results_active_high_left_1.0.csv")
+write.csv(res_active_ileum, file = "1115results_active_high_ileum_1.0.csv")
+```
+
+
+
+```{r}
+# high vs active result
+# ens.str <- substr(rownames(res_high_vs_active), 1, 15)
+# res_high_vs_active$symbol <- mapIds(org.Hs.eg.db,
+#                      keys=ens.str,
+#                      column="SYMBOL",
+#                      keytype="ENSEMBL",
+#                      multiVals="first")
+# res_high_vs_active$entrez <- mapIds(org.Hs.eg.db,
+#                      keys=ens.str,
+#                      column="ENTREZID",
+#                      keytype="ENSEMBL",
+#                      multiVals="first")
+```
+```{r}
+# resOrdered_active <- res_high_vs_active[order(abs(res_high_vs_active$log2FoldChange), decreasing = TRUE),]
+# #head(resOrdered_active_DF, 5)
+# resOrdered_active_DF <- as.data.frame(resOrdered_active)
+# resOrdered_active_DF <- resOrdered_active_DF %>%
+#   filter(!is.na(symbol) & !is.na(entrez)) %>%
+#   filter(abs(log2FoldChange) > 2) %>%
+#   mutate(padj = p.adjust(pvalue, method = "BH")) %>%
+#   filter(padj < 0.05) %>%
+#   arrange(padj) 
+# #   mutate(padj = p.adjust(pvalue, method = "BH"))
+# head(resOrdered_active_DF, 5)
+# dim(resOrdered_active_DF)
+```
+
+```{r}
+# write.csv(resOrdered_active_DF, file = "results_ordered_high_active.csv")
+```
+
+
